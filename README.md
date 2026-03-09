@@ -91,4 +91,4 @@ Run the binary:
 
 -   **Turnstile Keys**: Ensure your Turnstile keys are kept secret and not committed to public repositories.
 -   **JWT Secret**: Use a strong, random string for `PROXY_JWT_SECRET` to prevent token forging.
--   **Reverse Proxy Headers**: The proxy sets `X-Forwarded-Host` and updates the `Host` header to match the backend target. Ensure your backend is configured to trust these headers if necessary.
+-   **Reverse Proxy Headers**: The proxy preserves the original `Host` header from the client. Ensure your backend is configured to handle the incoming Host header correctly.

@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"html/template"
 	"log/slog"
 	"net"
@@ -18,8 +17,6 @@ import (
 	"sync/atomic"
 	"syscall"
 	"time"
-
-	"github.com/golang-jwt/jwt/v5"
 )
 
 // Config holds the application configuration.
@@ -28,7 +25,6 @@ type Config struct {
 	Port               string
 	MaxReqPerSec       int64
 	MaxConnPerSec      int64
-	JWTSecret          []byte
 	VerifyTime         time.Duration
 	MitigationTime     time.Duration
 	TurnstileSiteKey   string
@@ -61,11 +57,6 @@ func LoadConfig() (*Config, error) {
 		if v, err := strconv.ParseInt(s, 10, 64); err == nil {
 			maxConn = v
 		}
-	}
-
-	jwtSecret := os.Getenv("PROXY_JWT_SECRET")
-	if jwtSecret == "" {
-		jwtSecret = "default-insecure-secret-please-change"
 	}
 
 	verifyTime := 10 * time.Minute // Default 10 minutes
@@ -101,7 +92,6 @@ func LoadConfig() (*Config, error) {
 		Port:               port,
 		MaxReqPerSec:       maxReq,
 		MaxConnPerSec:      maxConn,
-		JWTSecret:          []byte(jwtSecret),
 		VerifyTime:         verifyTime,
 		MitigationTime:     mitigationTime,
 		TurnstileSiteKey:   os.Getenv("PROXY_TURNSTILE_PUBLIC_KEY"),
@@ -142,6 +132,8 @@ type ClientState struct {
 	violationCount  int
 	challengeServed bool
 	lastSeen        time.Time
+	verified        bool
+	verifiedAt      time.Time
 }
 
 // App holds the application state.
@@ -257,37 +249,15 @@ func (app *App) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate JWT
-	jwtToken := jwt.NewWithClaims(jwt.SigningMethodHS256, jwt.MapClaims{
-		"authorized": true,
-		"exp":        time.Now().Add(app.cfg.VerifyTime).Unix(),
-	})
-
-	tokenString, err := jwtToken.SignedString(app.cfg.JWTSecret)
-	if err != nil {
-		slog.Error("Failed to sign JWT", "error", err)
-		http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-		return
-	}
-
-	// Set cookie
-	http.SetCookie(w, &http.Cookie{
-		Name:     "proxy_auth",
-		Value:    tokenString,
-		Expires:  time.Now().Add(app.cfg.VerifyTime),
-		HttpOnly: true,
-		Path:     "/",
-	})
-
-	// Reset IP state upon successful verification
-	if val, ok := app.ipStates.Load(ip); ok {
-		state := val.(*ClientState)
-		state.mu.Lock()
-		state.violationCount = 0
-		state.challengeServed = false
-		state.blocked = false
-		state.mu.Unlock()
-	}
+	// Mark IP as verified
+	state := app.getClientState(ip)
+	state.mu.Lock()
+	state.violationCount = 0
+	state.challengeServed = false
+	state.blocked = false
+	state.verified = true
+	state.verifiedAt = time.Now()
+	state.mu.Unlock()
 
 	// Redirect to original URL
 	originalURL := r.FormValue("original_url")
@@ -325,9 +295,13 @@ func (app *App) cleanup() {
 		state.mu.Lock()
 		defer state.mu.Unlock()
 
-		// If attack ended and not always on, remove everything?
-		// "reset states when the attack ends"
-		if attackEnded && !app.cfg.AlwaysOn {
+		// Expire verification
+		if state.verified && now.Sub(state.verifiedAt) > app.cfg.VerifyTime {
+			state.verified = false
+		}
+
+		// If attack ended and not always on, we can clear non-verified states
+		if attackEnded && !app.cfg.AlwaysOn && !state.verified {
 			app.ipStates.Delete(key)
 			return true
 		}
@@ -340,7 +314,8 @@ func (app *App) cleanup() {
 		}
 
 		// Cleanup idle connections (e.g. 10 min inactivity)
-		if now.Sub(state.lastSeen) > 10*time.Minute {
+		// If verified, we keep it. If not verified and idle, delete.
+		if !state.verified && now.Sub(state.lastSeen) > 10*time.Minute {
 			app.ipStates.Delete(key)
 		}
 
@@ -369,29 +344,24 @@ func (app *App) Middleware(next http.Handler) http.Handler {
 			}
 			return
 		}
+
+		// Check verification status
+		if state.verified {
+			// Check expiration
+			if time.Since(state.verifiedAt) < app.cfg.VerifyTime {
+				state.mu.Unlock()
+				next.ServeHTTP(w, r)
+				return
+			}
+			// Expired
+			state.verified = false
+		}
 		state.mu.Unlock()
 
 		// Bypass for challenge verification
 		if r.URL.Path == "/challenge/verify" {
 			app.verifyChallenge(w, r)
 			return
-		}
-
-		// Check for valid JWT
-		cookie, err := r.Cookie("proxy_auth")
-		if err == nil {
-			token, err := jwt.Parse(cookie.Value, func(token *jwt.Token) (interface{}, error) {
-				if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
-					return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
-				}
-				return app.cfg.JWTSecret, nil
-			})
-
-			if err == nil && token.Valid {
-				// Valid token, pass through
-				next.ServeHTTP(w, r)
-				return
-			}
 		}
 
 		// Check global rate limits
