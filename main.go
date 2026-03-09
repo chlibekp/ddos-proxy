@@ -166,11 +166,9 @@ func NewProxy(target *url.URL) *httputil.ReverseProxy {
 
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
+		originalHost := req.Host
 		originalDirector(req)
-		req.Host = target.Host
-		if req.Header.Get("Host") == "" {
-			req.Header.Set("Host", req.Host)
-		}
+		req.Host = originalHost
 	}
 
 	proxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
