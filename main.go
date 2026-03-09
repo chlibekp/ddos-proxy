@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"syscall"
@@ -33,6 +34,7 @@ type Config struct {
 	TurnstileSiteKey   string
 	TurnstileSecretKey string
 	AlwaysOn           bool
+	UseForwardedFor    bool
 }
 
 // LoadConfig loads configuration from environment variables.
@@ -89,6 +91,11 @@ func LoadConfig() (*Config, error) {
 		alwaysOn = true
 	}
 
+	useForwardedFor := false
+	if s := os.Getenv("PROXY_USE_FORWARDED_FOR"); s == "true" || s == "1" {
+		useForwardedFor = true
+	}
+
 	return &Config{
 		BackendURL:         backendURL,
 		Port:               port,
@@ -100,6 +107,7 @@ func LoadConfig() (*Config, error) {
 		TurnstileSiteKey:   os.Getenv("PROXY_TURNSTILE_PUBLIC_KEY"),
 		TurnstileSecretKey: os.Getenv("PROXY_TURNSTILE_PRIVATE_KEY"),
 		AlwaysOn:           alwaysOn,
+		UseForwardedFor:    useForwardedFor,
 	}, nil
 }
 
@@ -173,6 +181,27 @@ func NewProxy(target *url.URL) *httputil.ReverseProxy {
 	return proxy
 }
 
+func (app *App) getClientIP(r *http.Request) string {
+	if app.cfg.UseForwardedFor {
+		forwarded := r.Header.Get("X-Forwarded-For")
+		if forwarded != "" {
+			// X-Forwarded-For: client, proxy1, proxy2
+			ips := strings.Split(forwarded, ",")
+			clientIP := strings.TrimSpace(ips[0])
+			if clientIP != "" {
+				return clientIP
+			}
+		}
+	}
+
+	ip, _, err := net.SplitHostPort(r.RemoteAddr)
+	if err != nil {
+		// If RemoteAddr doesn't have port (e.g. unit tests or special listeners), use it as is
+		return r.RemoteAddr
+	}
+	return ip
+}
+
 func (app *App) verifyTurnstile(responseToken, remoteIP string) bool {
 	formData := url.Values{}
 	formData.Set("secret", app.cfg.TurnstileSecretKey)
@@ -224,7 +253,7 @@ func (app *App) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 		app.serveChallenge(w, r, "Please complete the CAPTCHA")
 		return
 	}
-	ip, _, _ := net.SplitHostPort(r.RemoteAddr)
+	ip := app.getClientIP(r)
 	if !app.verifyTurnstile(responseToken, ip) {
 		app.serveChallenge(w, r, "CAPTCHA verification failed")
 		return
@@ -323,12 +352,7 @@ func (app *App) cleanup() {
 
 func (app *App) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		ip, _, err := net.SplitHostPort(r.RemoteAddr)
-		if err != nil {
-			slog.Error("Failed to split remote addr", "error", err)
-			http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-			return
-		}
+		ip := app.getClientIP(r)
 
 		// Check if IP is blocked
 		state := app.getClientState(ip)
