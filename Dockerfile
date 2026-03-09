@@ -27,6 +27,7 @@ WORKDIR /root/
 
 # Copy the binary from the builder stage
 COPY --from=builder /app/proxy .
+COPY --from=builder /app/challenge.html .
 
 # Expose the port
 EXPOSE 8080
