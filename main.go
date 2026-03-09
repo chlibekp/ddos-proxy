@@ -191,13 +191,20 @@ func NewProxy(target *url.URL) *httputil.ReverseProxy {
 			resp.Body.Close()
 
 			// JS to check X-Mitigation header
-			js := `<script>(function(){var c=function(h){if(h==='challenge')window.location.reload()};var f=window.fetch;if(f){var o=f;window.fetch=function(){return o.apply(this,arguments).then(function(r){if(r&&r.headers&&r.headers.get)c(r.headers.get('X-Mitigation'));return r})}};var x=XMLHttpRequest.prototype.open;XMLHttpRequest.prototype.open=function(){this.addEventListener('load',function(){if(this.getResponseHeader)c(this.getResponseHeader('X-Mitigation'))});return x.apply(this,arguments)}})();</script>`
+			js := `<script>(function(){var r=function(){window.location.reload()};var c=function(h){if(h==='challenge')r()};var f=window.fetch;if(f){window.fetch=function(){return f.apply(this,arguments).then(function(res){if(res&&res.headers&&res.headers.get){c(res.headers.get('X-Mitigation'))}return res})}}var x=XMLHttpRequest.prototype;var o=x.open;x.open=function(){this.addEventListener('load',function(){if(this.getResponseHeader){c(this.getResponseHeader('X-Mitigation'))}});return o.apply(this,arguments)}})();</script>`
 
-			newBody := string(bodyBytes) + js
+			bodyStr := string(bodyBytes)
+			if strings.Contains(bodyStr, "<head>") {
+				bodyStr = strings.Replace(bodyStr, "<head>", "<head>"+js, 1)
+			} else if strings.Contains(bodyStr, "<body>") {
+				bodyStr = strings.Replace(bodyStr, "<body>", "<body>"+js, 1)
+			} else {
+				bodyStr = js + bodyStr
+			}
 
-			resp.Body = io.NopCloser(strings.NewReader(newBody))
-			resp.ContentLength = int64(len(newBody))
-			resp.Header.Set("Content-Length", strconv.Itoa(len(newBody)))
+			resp.Body = io.NopCloser(strings.NewReader(bodyStr))
+			resp.ContentLength = int64(len(bodyStr))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(bodyStr)))
 		}
 
 		location := resp.Header.Get("Location")
