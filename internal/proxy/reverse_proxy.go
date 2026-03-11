@@ -40,7 +40,7 @@ func New(target *url.URL) *httputil.ReverseProxy {
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		// Add Via header for clean traffic identification
-		resp.Header.Set("Via", "ddos-protection/0.1")
+		resp.Header.Set("Via", "ddos-mitigator")
 
 		// Inject JS to check for X-Mitigation header
 		contentType := resp.Header.Get("Content-Type")
