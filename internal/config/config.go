@@ -23,6 +23,7 @@ type Config struct {
 	WhitelistedUA       []string
 	WhitelistRateLimit  int64
 	MaxFailedChallenges int
+	PrometheusEnabled   bool
 }
 
 // Load loads the configuration from environment variables.
@@ -102,6 +103,11 @@ func Load() (*Config, error) {
 		}
 	}
 
+	prometheusEnabled := false
+	if s := os.Getenv("PROXY_PROMETHEUS_ENABLED"); s == "true" || s == "1" {
+		prometheusEnabled = true
+	}
+
 	maxFailedChallenges := 5
 	if s := os.Getenv("PROXY_MAX_FAILED_CHALLENGES"); s != "" {
 		if v, err := strconv.Atoi(s); err == nil {
@@ -116,13 +122,14 @@ func Load() (*Config, error) {
 		MaxConnPerSec:       maxConn,
 		VerifyTime:          verifyTime,
 		MitigationTime:      mitigationTime,
-		TurnstileSiteKey:    os.Getenv("PROXY_TURNSTILE_PUBLIC_KEY"),
-		TurnstileSecretKey:  os.Getenv("PROXY_TURNSTILE_PRIVATE_KEY"),
+		TurnstileSiteKey:    os.Getenv("PROXY_TURNSTILE_SITE_KEY"),
+		TurnstileSecretKey:  os.Getenv("PROXY_TURNSTILE_SECRET_KEY"),
 		AlwaysOn:            alwaysOn,
 		UseForwardedFor:     useForwardedFor,
 		CloudflareSupport:   cloudflareSupport,
 		WhitelistedUA:       whitelistedUA,
 		WhitelistRateLimit:  whitelistRateLimit,
 		MaxFailedChallenges: maxFailedChallenges,
+		PrometheusEnabled:   prometheusEnabled,
 	}, nil
 }

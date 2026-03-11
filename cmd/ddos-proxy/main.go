@@ -16,6 +16,7 @@ import (
 	"github.com/hegy/ddos-proxy/internal/limiter"
 	"github.com/hegy/ddos-proxy/internal/proxy"
 	"github.com/hegy/ddos-proxy/internal/waf"
+	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
 func main() {
@@ -57,9 +58,29 @@ func main() {
 	reverseProxy := proxy.New(targetURL)
 	handler := wafManager.Middleware(reverseProxy)
 
+	mux := http.NewServeMux()
+	mux.Handle("/", handler)
+
+	if cfg.PrometheusEnabled {
+		metricsLimiter := limiter.NewIPLimiter()
+		metricsHandler := promhttp.Handler()
+		mux.HandleFunc("/metrics", func(w http.ResponseWriter, r *http.Request) {
+			ip, _, err := net.SplitHostPort(r.RemoteAddr)
+			if err != nil {
+				ip = r.RemoteAddr
+			}
+			if !metricsLimiter.Allow(ip) {
+				http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+				return
+			}
+			metricsHandler.ServeHTTP(w, r)
+		})
+		slog.Info("Prometheus metrics enabled", "endpoint", "/metrics")
+	}
+
 	server := &http.Server{
 		Addr:         ":" + cfg.Port,
-		Handler:      handler,
+		Handler:      mux,
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  120 * time.Second,
@@ -81,6 +102,7 @@ func main() {
 			"max_conn_per_sec", cfg.MaxConnPerSec,
 			"mitigation_time", cfg.MitigationTime,
 			"always_on", cfg.AlwaysOn,
+			"prometheus_enabled", cfg.PrometheusEnabled,
 		)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			slog.Error("Server failed", "error", err)
