@@ -12,6 +12,7 @@ A high-performance Go reverse proxy designed to protect backend services from DD
 - **Always-On Mode**: Option to permanently enable the challenge for all requests.
 - **Aggressive Blocking**: IPs that fail to solve the challenge and continue sending requests are blocked and their connections are closed.
 - **User-Agent Whitelisting**: Allows trusted bots (e.g., Googlebot) to bypass challenges, subject to a separate global rate limit.
+- **Prometheus Metrics**: Exposes a `/metrics` endpoint for monitoring, secured with a rate limit of 1 req/s per IP.
 
 ## Configuration
 
@@ -31,6 +32,7 @@ The proxy is configured via environment variables.
 | `PROXY_TURNSTILE_PRIVATE_KEY` | `""` | Cloudflare Turnstile Secret Key (Required for CAPTCHA). |
 | `PROXY_WHITELIST_UA` | `""` | Comma-separated list of User-Agent substrings to whitelist (e.g., `Googlebot,Bingbot`). |
 | `PROXY_WHITELIST_RATE` | `10` | Global rate limit (requests/sec) for all whitelisted User-Agents combined. |
+| `PROXY_PROMETHEUS_ENABLED` | `false` | If `true`, enables the `/metrics` endpoint. |
 
 ## Usage
 
