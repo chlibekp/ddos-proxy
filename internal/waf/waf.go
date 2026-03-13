@@ -278,10 +278,14 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 			if m.cfg.PrometheusEnabled {
 				metrics.DroppedRequests.WithLabelValues("blocked_ip").Inc()
 			}
-			if hijacker, ok := w.(http.Hijacker); ok {
-				conn, _, err := hijacker.Hijack()
-				if err == nil {
-					conn.Close()
+			if m.cfg.BlockAction == "close" {
+				if hijacker, ok := w.(http.Hijacker); ok {
+					conn, _, err := hijacker.Hijack()
+					if err == nil {
+						conn.Close()
+					}
+				} else {
+					http.Error(w, "Forbidden", http.StatusForbidden)
 				}
 			} else {
 				http.Error(w, "Forbidden", http.StatusForbidden)
@@ -343,11 +347,15 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 					if m.cfg.PrometheusEnabled {
 						metrics.DroppedRequests.WithLabelValues("challenge_violation").Inc()
 					}
-					if hijacker, ok := w.(http.Hijacker); ok {
-						conn, _, err := hijacker.Hijack()
-						if err == nil {
-							conn.Close()
+					if m.cfg.BlockAction == "close" {
+						if hijacker, ok := w.(http.Hijacker); ok {
+							conn, _, err := hijacker.Hijack()
+							if err == nil {
+								conn.Close()
+							}
 						}
+					} else {
+						http.Error(w, "Forbidden", http.StatusForbidden)
 					}
 					return
 				}

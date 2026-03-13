@@ -24,6 +24,7 @@ type Config struct {
 	WhitelistRateLimit  int64
 	MaxFailedChallenges int
 	PrometheusEnabled   bool
+	BlockAction         string
 }
 
 // Load loads the configuration from environment variables.
@@ -115,6 +116,11 @@ func Load() (*Config, error) {
 		}
 	}
 
+	blockAction := "403"
+	if s := os.Getenv("PROXY_BLOCK_ACTION"); s == "close" {
+		blockAction = "close"
+	}
+
 	return &Config{
 		BackendURL:          backendURL,
 		Port:                port,
@@ -131,5 +137,6 @@ func Load() (*Config, error) {
 		WhitelistRateLimit:  whitelistRateLimit,
 		MaxFailedChallenges: maxFailedChallenges,
 		PrometheusEnabled:   prometheusEnabled,
+		BlockAction:         blockAction,
 	}, nil
 }

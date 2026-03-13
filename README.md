@@ -10,7 +10,7 @@ A high-performance Go reverse proxy designed to protect backend services from DD
 - **IP Verification**: Validated IPs bypass challenges for a configurable duration.
 - **Sticky Mitigation**: Mitigation mode stays active for a set duration after the attack subsides.
 - **Always-On Mode**: Option to permanently enable the challenge for all requests.
-- **Aggressive Blocking**: IPs that fail to solve the challenge and continue sending requests are blocked and their connections are closed.
+- **Aggressive Blocking**: IPs that fail to solve the challenge and continue sending requests are blocked. The action is configurable (403 Forbidden or Close Connection).
 - **User-Agent Whitelisting**: Allows trusted bots (e.g., Googlebot) to bypass challenges, subject to a separate global rate limit.
 - **Prometheus Metrics**: Exposes a `/metrics` endpoint for monitoring, secured with a rate limit of 1 req/s per IP.
 
@@ -33,6 +33,7 @@ The proxy is configured via environment variables.
 | `PROXY_WHITELIST_UA` | `""` | Comma-separated list of User-Agent substrings to whitelist (e.g., `Googlebot,Bingbot`). |
 | `PROXY_WHITELIST_RATE` | `10` | Global rate limit (requests/sec) for all whitelisted User-Agents combined. |
 | `PROXY_PROMETHEUS_ENABLED` | `false` | If `true`, enables the `/metrics` endpoint. |
+| `PROXY_BLOCK_ACTION` | `403` | Action to take when an IP is blocked (`403` or `close`). |
 
 ## Usage
 
