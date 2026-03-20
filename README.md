@@ -34,6 +34,9 @@ The proxy is configured via environment variables.
 | `PROXY_WHITELIST_RATE` | `10` | Global rate limit (requests/sec) for all whitelisted User-Agents combined. |
 | `PROXY_PROMETHEUS_ENABLED` | `false` | If `true`, enables the `/metrics` endpoint. |
 | `PROXY_BLOCK_ACTION` | `403` | Action to take when an IP is blocked (`403` or `close`). |
+| `PROXY_AUTO_MITIGATION_ON_TIMEOUT` | `false` | If `true`, enables mitigation mode when multiple requests timeout or take too long. |
+| `PROXY_MAX_TIMEOUTS` | `5` | Number of timeouts/long requests allowed before triggering mitigation mode. |
+| `PROXY_TIMEOUT_THRESHOLD` | `5s` | Duration threshold to consider a request as "long" (e.g., `5s`, `10s`). |
 
 ## Usage
 

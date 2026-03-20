@@ -1,6 +1,7 @@
 package waf
 
 import (
+	"bufio"
 	"encoding/json"
 	"html/template"
 	"log/slog"
@@ -23,6 +24,7 @@ type Manager struct {
 	rl              *limiter.RateLimiter
 	templates       *template.Template
 	mitigationUntil int64    // Atomic unix timestamp
+	timeoutCount    int64    // Atomic counter for long/timed-out requests
 	ipStates        sync.Map // map[string]*ClientState
 }
 
@@ -197,6 +199,9 @@ func (m *Manager) cleanup() {
 	mitigationEnd := time.Unix(atomic.LoadInt64(&m.mitigationUntil), 0)
 	attackEnded := now.After(mitigationEnd)
 
+	// Reset timeout count every cleanup cycle
+	atomic.StoreInt64(&m.timeoutCount, 0)
+
 	// If attack has ended and we are not in always-on mode, we can be more aggressive with cleanup
 	// But we still need to iterate to check blocked IPs expiration
 
@@ -330,6 +335,12 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 			shouldServeChallenge = true
 		} else if now < mitigationUntil {
 			shouldServeChallenge = true
+		} else if m.cfg.AutoMitigationOnTimeout {
+			if atomic.LoadInt64(&m.timeoutCount) >= int64(m.cfg.MaxTimeouts) {
+				newUntil := time.Now().Add(m.cfg.MitigationTime).Unix()
+				atomic.StoreInt64(&m.mitigationUntil, newUntil)
+				shouldServeChallenge = true
+			}
 		}
 
 		if shouldServeChallenge {
@@ -371,6 +382,53 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 		if m.cfg.PrometheusEnabled {
 			metrics.AllowedRequests.WithLabelValues("normal").Inc()
 		}
-		next.ServeHTTP(w, r)
+
+		if m.cfg.AutoMitigationOnTimeout {
+			start := time.Now()
+
+			// Use a response writer wrapper to capture status code
+			rr := &responseRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+			next.ServeHTTP(rr, r)
+
+			duration := time.Since(start)
+
+			// Consider it a timeout if it took longer than threshold OR returned a gateway timeout/bad gateway
+			if duration >= m.cfg.TimeoutThreshold || rr.statusCode == http.StatusGatewayTimeout || rr.statusCode == http.StatusBadGateway {
+				count := atomic.AddInt64(&m.timeoutCount, 1)
+				if count >= int64(m.cfg.MaxTimeouts) {
+					// We just crossed the threshold. The next requests will trigger mitigation immediately.
+					newUntil := time.Now().Add(m.cfg.MitigationTime).Unix()
+					atomic.StoreInt64(&m.mitigationUntil, newUntil)
+				}
+			}
+		} else {
+			next.ServeHTTP(w, r)
+		}
 	})
+}
+
+// responseRecorder captures the status code from the ResponseWriter
+type responseRecorder struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rr *responseRecorder) WriteHeader(code int) {
+	rr.statusCode = code
+	rr.ResponseWriter.WriteHeader(code)
+}
+
+// Hijack implements the http.Hijacker interface to support websockets and other hijacked connections
+func (rr *responseRecorder) Hijack() (net.Conn, *bufio.ReadWriter, error) {
+	if hijacker, ok := rr.ResponseWriter.(http.Hijacker); ok {
+		return hijacker.Hijack()
+	}
+	return nil, nil, http.ErrNotSupported
+}
+
+// Flush implements the http.Flusher interface
+func (rr *responseRecorder) Flush() {
+	if flusher, ok := rr.ResponseWriter.(http.Flusher); ok {
+		flusher.Flush()
+	}
 }

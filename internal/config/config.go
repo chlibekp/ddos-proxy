@@ -9,22 +9,25 @@ import (
 
 // Config holds the application configuration loaded from environment variables.
 type Config struct {
-	BackendURL          string
-	Port                string
-	MaxReqPerSec        int64
-	MaxConnPerSec       int64
-	VerifyTime          time.Duration
-	MitigationTime      time.Duration
-	TurnstileSiteKey    string
-	TurnstileSecretKey  string
-	AlwaysOn            bool
-	UseForwardedFor     bool
-	CloudflareSupport   bool
-	WhitelistedUA       []string
-	WhitelistRateLimit  int64
-	MaxFailedChallenges int
-	PrometheusEnabled   bool
-	BlockAction         string
+	BackendURL              string
+	Port                    string
+	MaxReqPerSec            int64
+	MaxConnPerSec           int64
+	VerifyTime              time.Duration
+	MitigationTime          time.Duration
+	TurnstileSiteKey        string
+	TurnstileSecretKey      string
+	AlwaysOn                bool
+	UseForwardedFor         bool
+	CloudflareSupport       bool
+	WhitelistedUA           []string
+	WhitelistRateLimit      int64
+	MaxFailedChallenges     int
+	PrometheusEnabled       bool
+	BlockAction             string
+	AutoMitigationOnTimeout bool
+	MaxTimeouts             int
+	TimeoutThreshold        time.Duration
 }
 
 // Load loads the configuration from environment variables.
@@ -121,22 +124,46 @@ func Load() (*Config, error) {
 		blockAction = "close"
 	}
 
+	autoMitigationOnTimeout := false
+	if s := os.Getenv("PROXY_AUTO_MITIGATION_ON_TIMEOUT"); s == "true" || s == "1" {
+		autoMitigationOnTimeout = true
+	}
+
+	maxTimeouts := 5
+	if s := os.Getenv("PROXY_MAX_TIMEOUTS"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil {
+			maxTimeouts = v
+		}
+	}
+
+	timeoutThreshold := 5 * time.Second
+	if s := os.Getenv("PROXY_TIMEOUT_THRESHOLD"); s != "" {
+		if v, err := time.ParseDuration(s); err == nil {
+			timeoutThreshold = v
+		} else if vInt, err := strconv.Atoi(s); err == nil {
+			timeoutThreshold = time.Duration(vInt) * time.Second
+		}
+	}
+
 	return &Config{
-		BackendURL:          backendURL,
-		Port:                port,
-		MaxReqPerSec:        maxReq,
-		MaxConnPerSec:       maxConn,
-		VerifyTime:          verifyTime,
-		MitigationTime:      mitigationTime,
-		TurnstileSiteKey:    os.Getenv("PROXY_TURNSTILE_PUBLIC_KEY"),
-		TurnstileSecretKey:  os.Getenv("PROXY_TURNSTILE_PRIVATE_KEY"),
-		AlwaysOn:            alwaysOn,
-		UseForwardedFor:     useForwardedFor,
-		CloudflareSupport:   cloudflareSupport,
-		WhitelistedUA:       whitelistedUA,
-		WhitelistRateLimit:  whitelistRateLimit,
-		MaxFailedChallenges: maxFailedChallenges,
-		PrometheusEnabled:   prometheusEnabled,
-		BlockAction:         blockAction,
+		BackendURL:              backendURL,
+		Port:                    port,
+		MaxReqPerSec:            maxReq,
+		MaxConnPerSec:           maxConn,
+		VerifyTime:              verifyTime,
+		MitigationTime:          mitigationTime,
+		TurnstileSiteKey:        os.Getenv("PROXY_TURNSTILE_PUBLIC_KEY"),
+		TurnstileSecretKey:      os.Getenv("PROXY_TURNSTILE_PRIVATE_KEY"),
+		AlwaysOn:                alwaysOn,
+		UseForwardedFor:         useForwardedFor,
+		CloudflareSupport:       cloudflareSupport,
+		WhitelistedUA:           whitelistedUA,
+		WhitelistRateLimit:      whitelistRateLimit,
+		MaxFailedChallenges:     maxFailedChallenges,
+		PrometheusEnabled:       prometheusEnabled,
+		BlockAction:             blockAction,
+		AutoMitigationOnTimeout: autoMitigationOnTimeout,
+		MaxTimeouts:             maxTimeouts,
+		TimeoutThreshold:        timeoutThreshold,
 	}, nil
 }
