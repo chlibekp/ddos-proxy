@@ -38,12 +38,11 @@ sub vcl_recv {
 {{ if not .CacheEnabled }}
     return (pass);
 {{ else }}
-    if (req.method != "GET" && req.method != "HEAD") {
-        return (pass);
-    }
     # Varnish's default behavior is to bypass the cache entirely if it sees a Cookie or Authorization header.
-    # By simply returning hash for GET/HEAD, we bypass the default Cookie check.
-    return (hash);
+    # We force it to hash GET/HEAD requests so we can inspect the backend's Cache-Control header in vcl_backend_response.
+    if (req.method == "GET" || req.method == "HEAD") {
+        return (hash);
+    }
 {{ end }}
 }
 
@@ -77,7 +76,6 @@ sub vcl_backend_response {
     # Do not cache if the request had Cookies/Auth or the response sets a Cookie
     if (bereq.http.Cookie || bereq.http.Authorization || beresp.http.Set-Cookie || beresp.http.Cache-Control ~ "private|no-cache|no-store") {
         set beresp.uncacheable = true;
-        set beresp.ttl = 120s; # Hit-For-Pass object TTL
         return (deliver);
     }
 }
