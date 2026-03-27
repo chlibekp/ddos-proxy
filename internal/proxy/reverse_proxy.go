@@ -10,10 +10,10 @@ import (
 	"strings"
 )
 
-// New creates a new reverse proxy handler for the given proxy URL and backend URL.
+// New creates a new reverse proxy handler for the given target URL.
 // It includes logic for header manipulation and JS injection for mitigation checks.
-func New(proxyURL, backendURL *url.URL) *httputil.ReverseProxy {
-	proxy := httputil.NewSingleHostReverseProxy(proxyURL)
+func New(target *url.URL) *httputil.ReverseProxy {
+	proxy := httputil.NewSingleHostReverseProxy(target)
 
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
@@ -81,7 +81,7 @@ func New(proxyURL, backendURL *url.URL) *httputil.ReverseProxy {
 
 		// If the redirect location host matches the backend target host,
 		// rewrite it to the original request host.
-		if locURL.Host == backendURL.Host {
+		if locURL.Host == target.Host {
 			locURL.Host = resp.Request.Host
 
 			// Attempt to preserve the scheme from X-Forwarded-Proto

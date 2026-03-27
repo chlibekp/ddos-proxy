@@ -20,8 +20,8 @@ RUN CGO_ENABLED=0 GOOS=linux go build -o proxy cmd/ddos-proxy/main.go
 # Use a scratch image or alpine for the smallest footprint
 FROM alpine:latest
 
-# Install ca-certificates for HTTPS support and varnish
-RUN apk --no-cache add ca-certificates varnish
+# Install ca-certificates for HTTPS support
+RUN apk --no-cache add ca-certificates
 
 WORKDIR /root/
 
