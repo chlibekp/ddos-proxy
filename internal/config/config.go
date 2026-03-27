@@ -28,6 +28,8 @@ type Config struct {
 	AutoMitigationOnTimeout bool
 	MaxTimeouts             int
 	TimeoutThreshold        time.Duration
+	CacheEnabled            bool
+	CacheDir                string
 }
 
 // Load loads the configuration from environment variables.
@@ -145,6 +147,16 @@ func Load() (*Config, error) {
 		}
 	}
 
+	cacheEnabled := false
+	if s := os.Getenv("PROXY_CACHE_ENABLED"); s == "true" || s == "1" {
+		cacheEnabled = true
+	}
+
+	cacheDir := "cache_data"
+	if s := os.Getenv("PROXY_CACHE_DIR"); s != "" {
+		cacheDir = s
+	}
+
 	return &Config{
 		BackendURL:              backendURL,
 		Port:                    port,
@@ -165,5 +177,7 @@ func Load() (*Config, error) {
 		AutoMitigationOnTimeout: autoMitigationOnTimeout,
 		MaxTimeouts:             maxTimeouts,
 		TimeoutThreshold:        timeoutThreshold,
+		CacheEnabled:            cacheEnabled,
+		CacheDir:                cacheDir,
 	}, nil
 }

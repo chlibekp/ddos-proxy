@@ -56,7 +56,7 @@ func main() {
 		}
 	}()
 
-	reverseProxy := proxy.New(targetURL)
+	reverseProxy := proxy.New(targetURL, cfg)
 	handler := wafManager.Middleware(reverseProxy)
 
 	mux := http.NewServeMux()

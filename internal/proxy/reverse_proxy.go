@@ -8,12 +8,23 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+
+	"github.com/gregjones/httpcache"
+	"github.com/gregjones/httpcache/diskcache"
+	"github.com/hegy/ddos-proxy/internal/config"
 )
 
 // New creates a new reverse proxy handler for the given target URL.
 // It includes logic for header manipulation and JS injection for mitigation checks.
-func New(target *url.URL) *httputil.ReverseProxy {
+func New(target *url.URL, cfg *config.Config) *httputil.ReverseProxy {
 	proxy := httputil.NewSingleHostReverseProxy(target)
+
+	if cfg.CacheEnabled {
+		slog.Info("Enabling disk cache", "dir", cfg.CacheDir)
+		cache := diskcache.New(cfg.CacheDir)
+		transport := httpcache.NewTransport(cache)
+		proxy.Transport = transport
+	}
 
 	originalDirector := proxy.Director
 	proxy.Director = func(req *http.Request) {
@@ -41,6 +52,25 @@ func New(target *url.URL) *httputil.ReverseProxy {
 	proxy.ModifyResponse = func(resp *http.Response) error {
 		// Add Via header for clean traffic identification
 		resp.Header.Set("Via", "ddos-mitigator")
+
+		// Handle cache status header
+		if cfg.CacheEnabled {
+			if resp.Header.Get("X-From-Cache") == "1" {
+				resp.Header.Set("X-Ddos-Mitigator-Cache", "HIT")
+				resp.Header.Del("X-From-Cache")
+			} else {
+				// If it's not from cache, but Cache-Control allows caching, it's a MISS.
+				// Otherwise, it's DYNAMIC.
+				cc := resp.Header.Get("Cache-Control")
+				if cc != "" && !strings.Contains(cc, "no-cache") && !strings.Contains(cc, "no-store") && !strings.Contains(cc, "private") {
+					resp.Header.Set("X-Ddos-Mitigator-Cache", "MISS")
+				} else {
+					resp.Header.Set("X-Ddos-Mitigator-Cache", "DYNAMIC")
+				}
+			}
+		} else {
+			resp.Header.Set("X-Ddos-Mitigator-Cache", "DYNAMIC")
+		}
 
 		// Inject JS to check for X-Mitigation header
 		contentType := resp.Header.Get("Content-Type")
