@@ -74,8 +74,12 @@ func New(target *url.URL, cfg *config.Config) *httputil.ReverseProxy {
 		req.Header.Del("Cache-Control")
 		req.Header.Del("Pragma")
 
-		// Disable compression so we can inspect body
-		req.Header.Del("Accept-Encoding")
+		// We only need to disable Accept-Encoding if we plan to inspect/modify the body
+		// For Next.js image optimization (and many other binary formats), we should NOT strip Accept-Encoding
+		// The proxy.ModifyResponse only modifies text/html, so we only need to strip Accept-Encoding for HTML requests
+		if strings.Contains(req.Header.Get("Accept"), "text/html") {
+			req.Header.Del("Accept-Encoding")
+		}
 
 		// Set X-Forwarded-Host if not present
 		if req.Header.Get("X-Forwarded-Host") == "" {
