@@ -48,8 +48,9 @@ func New(target *url.URL, cfg *config.Config) *httputil.ReverseProxy {
 	proxy := httputil.NewSingleHostReverseProxy(target)
 
 	if cfg.CacheEnabled {
-		slog.Info("Enabling disk cache", "dir", cfg.CacheDir)
-		cache := diskcache.New(cfg.CacheDir)
+		cacheDir := "/tmp/ddos-mitigator-cache"
+		slog.Info("Enabling disk cache", "dir", cacheDir)
+		cache := diskcache.New(cacheDir)
 
 		// Create a custom transport that normalizes Cache-Control headers before passing to httpcache
 		baseTransport := http.DefaultTransport
