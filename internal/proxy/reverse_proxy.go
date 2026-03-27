@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httputil"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -13,6 +14,33 @@ import (
 	"github.com/gregjones/httpcache/diskcache"
 	"github.com/hegy/ddos-proxy/internal/config"
 )
+
+// NormalizingTransport wraps an http.RoundTripper to fix malformed Cache-Control headers
+type NormalizingTransport struct {
+	Transport http.RoundTripper
+}
+
+func (n *NormalizingTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := n.Transport.RoundTrip(req)
+	if err != nil {
+		return resp, err
+	}
+
+	// The httpcache library uses headers.Get("Cache-Control"), which only returns the FIRST
+	// Cache-Control header if there are multiple. We need to merge them into one.
+	if ccHeaders, ok := resp.Header["Cache-Control"]; ok && len(ccHeaders) > 0 {
+		merged := strings.Join(ccHeaders, ", ")
+
+		// Some backends return malformed headers like "max-age 86400" instead of "max-age=86400"
+		// The httpcache library expects the strict RFC format with equals signs.
+		re := regexp.MustCompile(`(max-age|s-maxage)\s+(\d+)`)
+		merged = re.ReplaceAllString(merged, "$1=$2")
+
+		resp.Header.Set("Cache-Control", merged)
+	}
+
+	return resp, nil
+}
 
 // New creates a new reverse proxy handler for the given target URL.
 // It includes logic for header manipulation and JS injection for mitigation checks.
@@ -22,7 +50,16 @@ func New(target *url.URL, cfg *config.Config) *httputil.ReverseProxy {
 	if cfg.CacheEnabled {
 		slog.Info("Enabling disk cache", "dir", cfg.CacheDir)
 		cache := diskcache.New(cfg.CacheDir)
+
+		// Create a custom transport that normalizes Cache-Control headers before passing to httpcache
+		baseTransport := http.DefaultTransport
+
+		normalizedTransport := &NormalizingTransport{
+			Transport: baseTransport,
+		}
+
 		transport := httpcache.NewTransport(cache)
+		transport.Transport = normalizedTransport
 		proxy.Transport = transport
 	}
 

@@ -12,6 +12,7 @@ A high-performance Go reverse proxy designed to protect backend services from DD
 - **Always-On Mode**: Option to permanently enable the challenge for all requests.
 - **Aggressive Blocking**: IPs that fail to solve the challenge and continue sending requests are blocked. The action is configurable (403 Forbidden or Close Connection).
 - **User-Agent Whitelisting**: Allows trusted bots (e.g., Googlebot) to bypass challenges, subject to a separate global rate limit.
+- **Disk Caching**: Built-in HTTP caching layer that respects standard `Cache-Control` headers, reducing load on the backend.
 - **Prometheus Metrics**: Exposes a `/metrics` endpoint for monitoring, secured with a rate limit of 1 req/s per IP.
 
 ## Configuration
@@ -37,6 +38,8 @@ The proxy is configured via environment variables.
 | `PROXY_AUTO_MITIGATION_ON_TIMEOUT` | `false` | If `true`, enables mitigation mode when multiple requests timeout or take too long. |
 | `PROXY_MAX_TIMEOUTS` | `5` | Number of timeouts/long requests allowed before triggering mitigation mode. |
 | `PROXY_TIMEOUT_THRESHOLD` | `5s` | Duration threshold to consider a request as "long" (e.g., `5s`, `10s`). |
+| `PROXY_CACHE_ENABLED` | `false` | If `true` or `1`, enables disk-based HTTP caching for responses with valid `Cache-Control` headers. |
+| `PROXY_CACHE_DIR` | `cache_data` | Directory where cached responses will be stored on disk. |
 
 ## Usage
 
@@ -86,16 +89,17 @@ Run the binary:
 1.  **User-Agent Check**: Requests matching a whitelisted User-Agent (via `PROXY_WHITELIST_UA`) bypass challenges and are subject to a separate global rate limit (`PROXY_WHITELIST_RATE`). If they exceed this limit, they receive a 429 error.
 2.  **Normal Operation**: Other requests are proxied to `PROXY_BACKEND_URL`. The proxy tracks global request and connection rates.
 3.  **Mitigation Trigger**: If rates exceed `PROXY_MAX_REQ` or `PROXY_MAX_CONN`, the proxy enters **Mitigation Mode**.
-4.  **Challenge**: In Mitigation Mode, all new requests (without a valid verification) are served a lightweight HTML page containing a Cloudflare Turnstile widget.
-5.  **Verification**:
+4.  **Disk Caching**: If enabled (`PROXY_CACHE_ENABLED`), the proxy will attempt to serve GET requests from disk if a valid cached copy exists, minimizing backend load. The `X-Ddos-Mitigator-Cache` response header indicates status (`HIT`, `MISS`, `DYNAMIC`).
+5.  **Challenge**: In Mitigation Mode, all new requests (without a valid verification) are served a lightweight HTML page containing a Cloudflare Turnstile widget.
+6.  **Verification**:
     -   The user solves the CAPTCHA.
     -   The browser submits the solution to `/challenge/verify`.
     -   The proxy verifies the token with Cloudflare.
     -   If valid, the IP address is marked as **verified** for `PROXY_VERIFY_TIME`.
     -   The user is redirected to their original URL.
-6.  **Bypass**: Subsequent requests from a verified IP bypass the rate limiter and are proxied directly to the backend.
-7.  **Blocking**: If an IP receives a challenge but continues to send requests without solving it (more than 5 times), the IP is **blocked**, and its TCP connection is forcibly closed.
-8.  **Recovery**: Mitigation Mode automatically turns off after `PROXY_MITIGATION_TIME` passes without rate violations (unless `PROXY_ALWAYS_ON` is set).
+7.  **Bypass**: Subsequent requests from a verified IP bypass the rate limiter and are proxied directly to the backend.
+8.  **Blocking**: If an IP receives a challenge but continues to send requests without solving it (more than 5 times), the IP is **blocked**, and its TCP connection is forcibly closed.
+9.  **Recovery**: Mitigation Mode automatically turns off after `PROXY_MITIGATION_TIME` passes without rate violations (unless `PROXY_ALWAYS_ON` is set).
 
 ## Security Notes
 
