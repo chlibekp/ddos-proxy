@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"os/exec"
 	"os/signal"
 	"syscall"
+	texttemplate "text/template"
 	"time"
 
 	"github.com/hegy/ddos-proxy/internal/config"
@@ -19,6 +21,89 @@ import (
 	"github.com/hegy/ddos-proxy/internal/waf"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
+
+const vclTemplateStr = `
+vcl 4.1;
+
+backend default {
+    .host = "{{ .Host }}";
+    .port = "{{ .Port }}";
+}
+
+sub vcl_recv {
+    # Ignore client cache-control headers so they don't force cache bypass
+    unset req.http.Cache-Control;
+    unset req.http.Pragma;
+
+{{ if not .CacheEnabled }}
+    return (pass);
+{{ end }}
+}
+
+sub vcl_pass {
+    set req.http.X-Ddos-Dynamic = "1";
+}
+
+sub vcl_backend_fetch {
+    unset bereq.http.X-Ddos-Dynamic;
+}
+
+sub vcl_deliver {
+    if (req.http.X-Ddos-Dynamic == "1") {
+        set resp.http.X-Ddos-Mitigator-Cache = "DYNAMIC";
+    } else if (obj.hits > 0) {
+        set resp.http.X-Ddos-Mitigator-Cache = "HIT";
+    } else {
+        set resp.http.X-Ddos-Mitigator-Cache = "MISS";
+    }
+}
+`
+
+type VCLConfig struct {
+	Host         string
+	Port         string
+	CacheEnabled bool
+}
+
+func startVarnish(backendURL *url.URL, cacheEnabled bool) error {
+	host := backendURL.Hostname()
+	port := backendURL.Port()
+	if port == "" {
+		if backendURL.Scheme == "https" {
+			port = "443"
+		} else {
+			port = "80"
+		}
+	}
+
+	tmpl, err := texttemplate.New("vcl").Parse(vclTemplateStr)
+	if err != nil {
+		return err
+	}
+
+	f, err := os.Create("/tmp/default.vcl")
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	if err := tmpl.Execute(f, VCLConfig{Host: host, Port: port, CacheEnabled: cacheEnabled}); err != nil {
+		return err
+	}
+
+	cmd := exec.Command("varnishd", "-f", "/tmp/default.vcl", "-a", ":8081", "-s", "malloc,256m", "-F")
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	go func() {
+		if err := cmd.Run(); err != nil {
+			slog.Error("varnishd exited with error", "error", err)
+		}
+	}()
+
+	// Wait for Varnish to start
+	time.Sleep(2 * time.Second)
+	return nil
+}
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
@@ -36,6 +121,15 @@ func main() {
 		slog.Error("Invalid backend URL", "url", cfg.BackendURL, "error", err)
 		os.Exit(1)
 	}
+
+	err = startVarnish(targetURL, cfg.VarnishEnabled)
+	if err != nil {
+		slog.Error("Failed to start varnish", "error", err)
+		os.Exit(1)
+	}
+
+	// Update the proxyURL to point to Varnish
+	proxyURL, _ := url.Parse("http://127.0.0.1:8081")
 
 	// Load templates
 	tmpl, err := template.ParseFiles("challenge.html")
@@ -56,7 +150,7 @@ func main() {
 		}
 	}()
 
-	reverseProxy := proxy.New(targetURL)
+	reverseProxy := proxy.New(proxyURL, targetURL)
 	handler := wafManager.Middleware(reverseProxy)
 
 	mux := http.NewServeMux()

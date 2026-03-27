@@ -28,6 +28,7 @@ type Config struct {
 	AutoMitigationOnTimeout bool
 	MaxTimeouts             int
 	TimeoutThreshold        time.Duration
+	VarnishEnabled          bool
 }
 
 // Load loads the configuration from environment variables.
@@ -100,6 +101,11 @@ func Load() (*Config, error) {
 		}
 	}
 
+	varnishEnabled := false
+	if s := os.Getenv("PROXY_VARNISH_ENABLED"); s == "true" || s == "1" {
+		varnishEnabled = true
+	}
+
 	whitelistRateLimit := int64(10)
 	if s := os.Getenv("PROXY_WHITELIST_RATE"); s != "" {
 		if v, err := strconv.ParseInt(s, 10, 64); err == nil {
@@ -165,5 +171,6 @@ func Load() (*Config, error) {
 		AutoMitigationOnTimeout: autoMitigationOnTimeout,
 		MaxTimeouts:             maxTimeouts,
 		TimeoutThreshold:        timeoutThreshold,
+		VarnishEnabled:          varnishEnabled,
 	}, nil
 }
