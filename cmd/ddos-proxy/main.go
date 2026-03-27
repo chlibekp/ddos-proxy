@@ -3,15 +3,12 @@ package main
 import (
 	"context"
 	"html/template"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
-	"net/http/httputil"
 	"net/url"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -59,118 +56,11 @@ func main() {
 		}
 	}()
 
-	var reverseProxy *httputil.ReverseProxy
-
-	if cfg.UseVarnish {
-		directProxy := proxy.New(targetURL, targetURL.Host)
-
-		internalProxy := httputil.NewSingleHostReverseProxy(targetURL)
-
-		internalProxy.Transport = &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-			DisableKeepAlives:     true,
-		}
-
-		originalDirector := internalProxy.Director
-		internalProxy.Director = func(req *http.Request) {
-			originalHost := req.Host
-			originalDirector(req)
-			req.Host = originalHost
-			req.Header.Del("Connection")
-			req.Header.Del("Keep-Alive")
-		}
-
-		internalServer := &http.Server{
-			Addr:              "127.0.0.1:6082",
-			Handler:           internalProxy,
-			ReadHeaderTimeout: 10 * time.Second,
-			IdleTimeout:       120 * time.Second,
-		}
-
-		go func() {
-			slog.Info("Starting internal proxy for Varnish", "addr", "127.0.0.1:6082", "backend", cfg.BackendURL)
-			if err := internalServer.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-				slog.Error("Internal server failed", "error", err)
-			}
-		}()
-
-		varnishURL, _ := url.Parse("http://127.0.0.1:6081")
-		reverseProxy = proxy.New(varnishURL, targetURL.Host)
-
-		reverseProxy.Transport = &http.Transport{
-			Proxy:                 http.ProxyFromEnvironment,
-			ForceAttemptHTTP2:     true,
-			MaxIdleConns:          100,
-			IdleConnTimeout:       90 * time.Second,
-			TLSHandshakeTimeout:   10 * time.Second,
-			ExpectContinueTimeout: 1 * time.Second,
-			DisableKeepAlives:     true,
-		}
-		reverseProxy.ErrorHandler = func(w http.ResponseWriter, r *http.Request, err error) {
-			errStr := strings.ToLower(err.Error())
-			if strings.Contains(errStr, "127.0.0.1:6081") ||
-				strings.Contains(errStr, "connection refused") ||
-				strings.Contains(errStr, "connection reset") ||
-				strings.Contains(errStr, "broken pipe") ||
-				strings.Contains(errStr, "timeout") {
-				slog.Warn("Varnish unavailable, falling back to direct backend proxy", "error", err, "path", r.URL.Path)
-				directProxy.ServeHTTP(w, r)
-				return
-			}
-			slog.Error("Proxy error", "error", err, "path", r.URL.Path)
-			http.Error(w, "Bad Gateway", http.StatusBadGateway)
-		}
-
-	} else {
-		reverseProxy = proxy.New(targetURL, targetURL.Host)
-	}
-
+	reverseProxy := proxy.New(targetURL)
 	handler := wafManager.Middleware(reverseProxy)
 
 	mux := http.NewServeMux()
-
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if cfg.UseVarnish && r.Method == "PURGE" {
-			if cfg.VarnishPurgeKey == "" || r.Header.Get("X-Purge-Key") != cfg.VarnishPurgeKey {
-				http.Error(w, "Unauthorized", http.StatusUnauthorized)
-				return
-			}
-
-			purgeURL := "http://127.0.0.1:6081/" + r.URL.Path
-			if r.URL.RawQuery != "" {
-				purgeURL += "?" + r.URL.RawQuery
-			}
-			purgeReq, err := http.NewRequest("PURGE", purgeURL, nil)
-			if err != nil {
-				http.Error(w, "Internal Server Error", http.StatusInternalServerError)
-				return
-			}
-			purgeReq.Host = r.Host
-
-			purgeClient := &http.Client{Timeout: 5 * time.Second}
-			resp, err := purgeClient.Do(purgeReq)
-			if err != nil {
-				http.Error(w, "Gateway Timeout", http.StatusGatewayTimeout)
-				return
-			}
-			defer resp.Body.Close()
-
-			for k, vv := range resp.Header {
-				for _, v := range vv {
-					w.Header().Add(k, v)
-				}
-			}
-			w.WriteHeader(resp.StatusCode)
-			io.Copy(w, resp.Body)
-			return
-		}
-		handler.ServeHTTP(w, r)
-	})
+	mux.Handle("/", handler)
 
 	if cfg.PrometheusEnabled {
 		metricsLimiter := limiter.NewIPLimiter()
@@ -191,10 +81,11 @@ func main() {
 	}
 
 	server := &http.Server{
-		Addr:              ":" + cfg.Port,
-		Handler:           mux,
-		ReadHeaderTimeout: 10 * time.Second,
-		IdleTimeout:       120 * time.Second,
+		Addr:         ":" + cfg.Port,
+		Handler:      mux,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
 		ConnState: func(conn net.Conn, state http.ConnState) {
 			if state == http.StateNew {
 				rl.IncConn()

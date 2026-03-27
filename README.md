@@ -37,9 +37,6 @@ The proxy is configured via environment variables.
 | `PROXY_AUTO_MITIGATION_ON_TIMEOUT` | `false` | If `true`, enables mitigation mode when multiple requests timeout or take too long. |
 | `PROXY_MAX_TIMEOUTS` | `5` | Number of timeouts/long requests allowed before triggering mitigation mode. |
 | `PROXY_TIMEOUT_THRESHOLD` | `5s` | Duration threshold to consider a request as "long" (e.g., `5s`, `10s`). |
-| `PROXY_USE_VARNISH` | `false` | If `true`, runs Varnish cache behind the proxy to cache backend responses. |
-| `PROXY_VARNISH_PURGE_KEY` | `""` | API key required to send `PURGE` requests (via `X-Purge-Key` header) to clear Varnish cache. |
-| `PROXY_VARNISH_CACHE_SIZE` | `256m` | Maximum memory size allocated for Varnish cache (e.g. `256m`, `1g`). |
 
 ## Usage
 
@@ -87,19 +84,18 @@ Run the binary:
 ## How it Works
 
 1.  **User-Agent Check**: Requests matching a whitelisted User-Agent (via `PROXY_WHITELIST_UA`) bypass challenges and are subject to a separate global rate limit (`PROXY_WHITELIST_RATE`). If they exceed this limit, they receive a 429 error.
-2.  **Normal Operation**: Other requests are proxied to `PROXY_BACKEND_URL` (or to the internal Varnish cache if `PROXY_USE_VARNISH` is enabled). The proxy tracks global request and connection rates.
-3.  **Varnish Caching (Optional)**: If `PROXY_USE_VARNISH` is enabled, valid requests are forwarded to an internal Varnish instance listening on `127.0.0.1:6081`. Varnish fetches from the Go internal proxy on `127.0.0.1:6082`. Varnish caches backend responses, keeps uncached (slow) responses streaming without aggressive proxy timeouts cutting them off, and adds an `X-Varnish-Cache: HIT|MISS|DYNAMIC` response header for observability. Cache can be purged by sending a `PURGE` request to any path with the `X-Purge-Key` header matching `PROXY_VARNISH_PURGE_KEY`.
-4.  **Mitigation Trigger**: If rates exceed `PROXY_MAX_REQ` or `PROXY_MAX_CONN`, the proxy enters **Mitigation Mode**.
-5.  **Challenge**: In Mitigation Mode, all new requests (without a valid verification) are served a lightweight HTML page containing a Cloudflare Turnstile widget.
-6.  **Verification**:
+2.  **Normal Operation**: Other requests are proxied to `PROXY_BACKEND_URL`. The proxy tracks global request and connection rates.
+3.  **Mitigation Trigger**: If rates exceed `PROXY_MAX_REQ` or `PROXY_MAX_CONN`, the proxy enters **Mitigation Mode**.
+4.  **Challenge**: In Mitigation Mode, all new requests (without a valid verification) are served a lightweight HTML page containing a Cloudflare Turnstile widget.
+5.  **Verification**:
     -   The user solves the CAPTCHA.
     -   The browser submits the solution to `/challenge/verify`.
     -   The proxy verifies the token with Cloudflare.
     -   If valid, the IP address is marked as **verified** for `PROXY_VERIFY_TIME`.
     -   The user is redirected to their original URL.
-7.  **Bypass**: Subsequent requests from a verified IP bypass the rate limiter and are proxied directly to the backend (or Varnish).
-8.  **Blocking**: If an IP receives a challenge but continues to send requests without solving it (more than 5 times), the IP is **blocked**, and its TCP connection is forcibly closed.
-9.  **Recovery**: Mitigation Mode automatically turns off after `PROXY_MITIGATION_TIME` passes without rate violations (unless `PROXY_ALWAYS_ON` is set).
+6.  **Bypass**: Subsequent requests from a verified IP bypass the rate limiter and are proxied directly to the backend.
+7.  **Blocking**: If an IP receives a challenge but continues to send requests without solving it (more than 5 times), the IP is **blocked**, and its TCP connection is forcibly closed.
+8.  **Recovery**: Mitigation Mode automatically turns off after `PROXY_MITIGATION_TIME` passes without rate violations (unless `PROXY_ALWAYS_ON` is set).
 
 ## Security Notes
 

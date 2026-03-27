@@ -28,8 +28,6 @@ type Config struct {
 	AutoMitigationOnTimeout bool
 	MaxTimeouts             int
 	TimeoutThreshold        time.Duration
-	UseVarnish              bool
-	VarnishPurgeKey         string
 }
 
 // Load loads the configuration from environment variables.
@@ -147,11 +145,6 @@ func Load() (*Config, error) {
 		}
 	}
 
-	useVarnish := false
-	if s := os.Getenv("PROXY_USE_VARNISH"); s == "true" || s == "1" {
-		useVarnish = true
-	}
-
 	return &Config{
 		BackendURL:              backendURL,
 		Port:                    port,
@@ -172,7 +165,5 @@ func Load() (*Config, error) {
 		AutoMitigationOnTimeout: autoMitigationOnTimeout,
 		MaxTimeouts:             maxTimeouts,
 		TimeoutThreshold:        timeoutThreshold,
-		UseVarnish:              useVarnish,
-		VarnishPurgeKey:         os.Getenv("PROXY_VARNISH_PURGE_KEY"),
 	}, nil
 }
