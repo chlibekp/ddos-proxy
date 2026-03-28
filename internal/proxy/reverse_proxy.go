@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"compress/gzip"
 	"io"
 	"log/slog"
 	"net/http"
@@ -70,10 +71,6 @@ func New(target *url.URL, cfg *config.Config) *httputil.ReverseProxy {
 		originalDirector(req)
 		req.Host = originalHost
 
-		// Strip client Cache-Control headers so devtools "Disable cache" doesn't bypass our proxy cache
-		req.Header.Del("Cache-Control")
-		req.Header.Del("Pragma")
-
 		// We only need to disable Accept-Encoding if we plan to inspect/modify the body
 		// For Next.js image optimization (and many other binary formats), we should NOT strip Accept-Encoding
 		// The proxy.ModifyResponse only modifies text/html, so we only need to strip Accept-Encoding for HTML requests
@@ -121,7 +118,25 @@ func New(target *url.URL, cfg *config.Config) *httputil.ReverseProxy {
 		// Inject JS to check for X-Mitigation header
 		contentType := resp.Header.Get("Content-Type")
 		if strings.HasPrefix(contentType, "text/html") {
-			bodyBytes, err := io.ReadAll(resp.Body)
+			var bodyBytes []byte
+			var err error
+
+			ce := resp.Header.Get("Content-Encoding")
+			if ce == "gzip" {
+				gr, err := gzip.NewReader(resp.Body)
+				if err == nil {
+					bodyBytes, err = io.ReadAll(gr)
+					gr.Close()
+				} else {
+					bodyBytes, err = io.ReadAll(resp.Body)
+				}
+			} else if ce != "" && ce != "identity" {
+				// Unsupported encoding, skip JS injection to avoid corrupting the body
+				return nil
+			} else {
+				bodyBytes, err = io.ReadAll(resp.Body)
+			}
+
 			if err != nil {
 				return err
 			}
@@ -138,6 +153,10 @@ func New(target *url.URL, cfg *config.Config) *httputil.ReverseProxy {
 				bodyStr = strings.Replace(bodyStr, "<body>", "<body>"+js, 1)
 			} else {
 				bodyStr = js + bodyStr
+			}
+
+			if ce == "gzip" {
+				resp.Header.Del("Content-Encoding")
 			}
 
 			resp.Body = io.NopCloser(strings.NewReader(bodyStr))
