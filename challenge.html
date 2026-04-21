@@ -3,12 +3,47 @@
 <head>
     <meta charset="UTF-8">
     <link rel="icon" href="data:,">
+    {{if .SiteKey}}
     <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
     <script>
         function submitForm() {
             document.getElementById("challenge-form").submit();
         }
     </script>
+    {{else}}
+    <script>
+        async function sha256(message) {
+            const msgBuffer = new TextEncoder().encode(message);
+            const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+            const hashArray = Array.from(new Uint8Array(hashBuffer));
+            return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+        }
+
+        async function solvePoW() {
+            const salt = "{{.PoWSalt}}";
+            const targetPrefix = "0000"; // Difficulty 4
+            let nonce = 0;
+
+            while (true) {
+                const hash = await sha256(salt + nonce);
+                if (hash.startsWith(targetPrefix)) {
+                    document.getElementById("pow-nonce").value = nonce;
+                    document.getElementById("challenge-form").submit();
+                    return;
+                }
+                nonce++;
+                // Yield to main thread every 1000 iterations so UI doesn't freeze completely
+                if (nonce % 1000 === 0) {
+                    await new Promise(resolve => setTimeout(resolve, 0));
+                }
+            }
+        }
+        
+        window.onload = function() {
+            solvePoW();
+        };
+    </script>
+    {{end}}
     <style>
         body {
             display: flex;
@@ -54,7 +89,11 @@
 <body>
     <form id="challenge-form" method="POST" action="/challenge/verify">
         <input type="hidden" name="original_url" value="{{.OriginalURL}}">
+        {{if .SiteKey}}
         <div class="cf-turnstile" data-sitekey="{{.SiteKey}}" data-callback="submitForm"></div>
+        {{else}}
+        <input type="hidden" name="pow_nonce" id="pow-nonce" value="">
+        {{end}}
     </form>
     <div class="footer">
         <span>DDoS protection by <a href="https://hegy.xyz" target="_blank" rel="noopener noreferrer">Hegy.xyz</a></span>

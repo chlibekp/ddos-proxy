@@ -2,6 +2,9 @@ package waf
 
 import (
 	"bufio"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"html/template"
 	"log/slog"
@@ -30,9 +33,11 @@ type Manager struct {
 
 // ChallengeData is passed to the template.
 type ChallengeData struct {
-	Error       string
-	SiteKey     string
-	OriginalURL string
+	Error         string
+	SiteKey       string
+	OriginalURL   string
+	PoWSalt       string
+	PoWDifficulty int
 }
 
 // NewManager creates a new WAF manager.
@@ -107,10 +112,24 @@ func (m *Manager) verifyTurnstile(responseToken, remoteIP string) bool {
 }
 
 func (m *Manager) serveChallenge(w http.ResponseWriter, r *http.Request, errMsg string) {
+	ip := m.getClientIP(r)
+	state := m.getClientState(ip)
+
+	state.mu.Lock()
+	if state.powSalt == "" {
+		b := make([]byte, 16)
+		rand.Read(b)
+		state.powSalt = hex.EncodeToString(b)
+	}
+	salt := state.powSalt
+	state.mu.Unlock()
+
 	data := ChallengeData{
-		Error:       errMsg,
-		SiteKey:     m.cfg.TurnstileSiteKey,
-		OriginalURL: r.URL.String(),
+		Error:         errMsg,
+		SiteKey:       m.cfg.TurnstileSiteKey,
+		OriginalURL:   r.URL.String(),
+		PoWSalt:       salt,
+		PoWDifficulty: 4,
 	}
 
 	w.Header().Set("X-Mitigation", "challenge")
@@ -138,22 +157,55 @@ func (m *Manager) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Turnstile Verification
-	responseToken := r.FormValue("cf-turnstile-response")
-	if responseToken == "" {
-		if m.cfg.PrometheusEnabled {
-			metrics.DroppedRequests.WithLabelValues("challenge_empty_token").Inc()
-		}
-		m.serveChallenge(w, r, "Please complete the CAPTCHA")
-		return
-	}
 	ip := m.getClientIP(r)
-	if !m.verifyTurnstile(responseToken, ip) {
-		if m.cfg.PrometheusEnabled {
-			metrics.DroppedRequests.WithLabelValues("challenge_verification_failed").Inc()
+
+	if m.cfg.TurnstileSiteKey != "" {
+		// Turnstile Verification
+		responseToken := r.FormValue("cf-turnstile-response")
+		if responseToken == "" {
+			if m.cfg.PrometheusEnabled {
+				metrics.DroppedRequests.WithLabelValues("challenge_empty_token").Inc()
+			}
+			m.serveChallenge(w, r, "Please complete the CAPTCHA")
+			return
 		}
-		m.serveChallenge(w, r, "CAPTCHA verification failed")
-		return
+		if !m.verifyTurnstile(responseToken, ip) {
+			if m.cfg.PrometheusEnabled {
+				metrics.DroppedRequests.WithLabelValues("challenge_verification_failed").Inc()
+			}
+			m.serveChallenge(w, r, "CAPTCHA verification failed")
+			return
+		}
+	} else {
+		// PoW Verification
+		nonce := r.FormValue("pow_nonce")
+		if nonce == "" {
+			if m.cfg.PrometheusEnabled {
+				metrics.DroppedRequests.WithLabelValues("challenge_empty_pow").Inc()
+			}
+			m.serveChallenge(w, r, "Please complete the PoW")
+			return
+		}
+
+		state := m.getClientState(ip)
+		state.mu.Lock()
+		salt := state.powSalt
+		state.mu.Unlock()
+
+		if salt == "" {
+			m.serveChallenge(w, r, "Invalid challenge session")
+			return
+		}
+
+		hash := sha256.Sum256([]byte(salt + nonce))
+		hashHex := hex.EncodeToString(hash[:])
+		if !strings.HasPrefix(hashHex, "0000") {
+			if m.cfg.PrometheusEnabled {
+				metrics.DroppedRequests.WithLabelValues("challenge_pow_failed").Inc()
+			}
+			m.serveChallenge(w, r, "PoW verification failed")
+			return
+		}
 	}
 
 	// Mark IP as verified
@@ -164,6 +216,8 @@ func (m *Manager) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 	state.blocked = false
 	state.verified = true
 	state.verifiedAt = time.Now()
+	// Clear PoW salt so it can't be reused
+	state.powSalt = ""
 	state.mu.Unlock()
 
 	// Redirect to original URL

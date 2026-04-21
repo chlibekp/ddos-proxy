@@ -1,12 +1,13 @@
 # DDoS Protection Proxy
 
-A high-performance Go reverse proxy designed to protect backend services from DDoS attacks. It features global rate limiting, connection limiting, and Cloudflare Turnstile challenges to mitigate automated attacks.
+A high-performance Go reverse proxy designed to protect backend services from DDoS attacks. It features global rate limiting, connection limiting, Cloudflare Turnstile, and a native Proof-of-Work (PoW) captcha to mitigate automated attacks.
 
 ## Features
 
 - **Global Rate Limiting**: Triggers mitigation mode when request rate exceeds a threshold.
 - **Connection Limiting**: Triggers mitigation mode when new connection rate exceeds a threshold.
-- **Cloudflare Turnstile**: Challenges users with a CAPTCHA when mitigation mode is active.
+- **Invisible Proof-of-Work (PoW)**: A native fallback challenge that forces malicious bots to expend CPU cycles without requiring user interaction.
+- **Cloudflare Turnstile**: Optional CAPTCHA widget that can be enabled by supplying API keys.
 - **IP Verification**: Validated IPs bypass challenges for a configurable duration.
 - **Sticky Mitigation**: Mitigation mode stays active for a set duration after the attack subsides.
 - **Always-On Mode**: Option to permanently enable the challenge for all requests.
@@ -29,8 +30,8 @@ The proxy is configured via environment variables.
 | `PROXY_VERIFY_TIME` | `5m` | Duration for which a user remains verified after solving a CAPTCHA. |
 | `PROXY_ALWAYS_ON` | `false` | If `true`, the challenge is served for every request regardless of rate. |
 | `PROXY_CLOUDFLARE_SUPPORT` | `false` | If `true`, the `CF-Connecting-IP` header is used as the client IP. |
-| `PROXY_TURNSTILE_PUBLIC_KEY` | `""` | Cloudflare Turnstile Site Key (Required for CAPTCHA). |
-| `PROXY_TURNSTILE_PRIVATE_KEY` | `""` | Cloudflare Turnstile Secret Key (Required for CAPTCHA). |
+| `PROXY_TURNSTILE_PUBLIC_KEY` | `""` | Cloudflare Turnstile Site Key (Optional, uses PoW if omitted). |
+| `PROXY_TURNSTILE_PRIVATE_KEY` | `""` | Cloudflare Turnstile Secret Key (Optional, uses PoW if omitted). |
 | `PROXY_WHITELIST_UA` | `""` | Comma-separated list of User-Agent substrings to whitelist (e.g., `Googlebot,Bingbot`). |
 | `PROXY_WHITELIST_RATE` | `10` | Global rate limit (requests/sec) for all whitelisted User-Agents combined. |
 | `PROXY_PROMETHEUS_ENABLED` | `false` | If `true`, enables the `/metrics` endpoint. |
@@ -45,7 +46,7 @@ The proxy is configured via environment variables.
 ### Prerequisites
 
 1.  **Go 1.23+** installed.
-2.  **Cloudflare Turnstile Keys**: Obtain a Site Key and Secret Key from the [Cloudflare Dashboard](https://dash.cloudflare.com/?to=/:account/turnstile).
+2.  **(Optional) Cloudflare Turnstile Keys**: Obtain a Site Key and Secret Key from the [Cloudflare Dashboard](https://dash.cloudflare.com/?to=/:account/turnstile). If omitted, the proxy will default to using the native Proof-of-Work challenge.
 
 ### Running Locally
 
@@ -53,8 +54,6 @@ The proxy is configured via environment variables.
 
     ```bash
     export PROXY_BACKEND_URL="http://localhost:3000"
-    export PROXY_TURNSTILE_PUBLIC_KEY="your-site-key"
-    export PROXY_TURNSTILE_PRIVATE_KEY="your-secret-key"
     
     # Optional tuning
     export PROXY_MAX_REQ=500
@@ -89,11 +88,11 @@ Run the binary:
 2.  **Normal Operation**: Other requests are proxied to `PROXY_BACKEND_URL`. The proxy tracks global request and connection rates.
 3.  **Mitigation Trigger**: If rates exceed `PROXY_MAX_REQ` or `PROXY_MAX_CONN`, the proxy enters **Mitigation Mode**.
 4.  **Disk Caching**: If enabled (`PROXY_CACHE_ENABLED`), the proxy will attempt to serve GET requests from disk if a valid cached copy exists, minimizing backend load. The `X-Ddos-Mitigator-Cache` response header indicates status (`HIT`, `MISS`, `DYNAMIC`).
-5.  **Challenge**: In Mitigation Mode, all new requests (without a valid verification) are served a lightweight HTML page containing a Cloudflare Turnstile widget.
+5.  **Challenge**: In Mitigation Mode, all new requests (without a valid verification) are served a lightweight HTML page. If Turnstile keys are provided, it renders a CAPTCHA widget. If not, it runs an invisible Proof-of-Work solver using the browser's crypto API.
 6.  **Verification**:
-    -   The user solves the CAPTCHA.
+    -   The user solves the CAPTCHA or the browser completes the PoW challenge.
     -   The browser submits the solution to `/challenge/verify`.
-    -   The proxy verifies the token with Cloudflare.
+    -   The proxy verifies the token with Cloudflare or validates the PoW hash.
     -   If valid, the IP address is marked as **verified** for `PROXY_VERIFY_TIME`.
     -   The user is redirected to their original URL.
 7.  **Bypass**: Subsequent requests from a verified IP bypass the rate limiter and are proxied directly to the backend.

@@ -15,4 +15,5 @@ type ClientState struct {
 	lastSeen        time.Time
 	verified        bool
 	verifiedAt      time.Time
+	powSalt         string
 }
