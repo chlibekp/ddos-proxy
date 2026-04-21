@@ -3,6 +3,7 @@ module github.com/hegy/ddos-proxy
 go 1.23.2
 
 require (
+	github.com/gorilla/websocket v1.5.3
 	github.com/gregjones/httpcache v0.0.0-20190611155906-901d90724c79
 	github.com/prometheus/client_golang v1.23.2
 )

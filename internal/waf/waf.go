@@ -238,10 +238,21 @@ func (m *Manager) cleanup() {
 	})
 }
 
+func isWebSocketUpgrade(req *http.Request) bool {
+	return strings.Contains(strings.ToLower(req.Header.Get("Connection")), "upgrade") &&
+		strings.ToLower(req.Header.Get("Upgrade")) == "websocket"
+}
+
 // Middleware is the main entry point for the WAF protection.
 // It checks rate limits, IP blocking, and serves challenges if necessary.
 func (m *Manager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Bypass WAF entirely for WebSocket upgrades so they always work
+		if isWebSocketUpgrade(r) {
+			next.ServeHTTP(w, r)
+			return
+		}
+
 		// Check Whitelisted User Agents
 		ua := r.Header.Get("User-Agent")
 		isWhitelisted := false

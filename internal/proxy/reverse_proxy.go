@@ -43,26 +43,55 @@ func (n *NormalizingTransport) RoundTrip(req *http.Request) (*http.Response, err
 	return resp, nil
 }
 
+// WebSocketAwareTransport bypasses the cache transport for WebSocket upgrade requests
+type WebSocketAwareTransport struct {
+	DefaultTransport http.RoundTripper
+	CacheTransport   http.RoundTripper
+}
+
+func (t *WebSocketAwareTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	if isWebSocketUpgrade(req) {
+		return t.DefaultTransport.RoundTrip(req)
+	}
+	if t.CacheTransport != nil {
+		return t.CacheTransport.RoundTrip(req)
+	}
+	return t.DefaultTransport.RoundTrip(req)
+}
+
+func isWebSocketUpgrade(req *http.Request) bool {
+	return strings.Contains(strings.ToLower(req.Header.Get("Connection")), "upgrade") &&
+		strings.ToLower(req.Header.Get("Upgrade")) == "websocket"
+}
+
 // New creates a new reverse proxy handler for the given target URL.
 // It includes logic for header manipulation and JS injection for mitigation checks.
 func New(target *url.URL, cfg *config.Config) *httputil.ReverseProxy {
 	proxy := httputil.NewSingleHostReverseProxy(target)
+
+	baseTransport := http.DefaultTransport
 
 	if cfg.CacheEnabled {
 		cacheDir := "/tmp/ddos-mitigator-cache"
 		slog.Info("Enabling disk cache", "dir", cacheDir)
 		cache := diskcache.New(cacheDir)
 
-		// Create a custom transport that normalizes Cache-Control headers before passing to httpcache
-		baseTransport := http.DefaultTransport
-
 		normalizedTransport := &NormalizingTransport{
 			Transport: baseTransport,
 		}
 
-		transport := httpcache.NewTransport(cache)
-		transport.Transport = normalizedTransport
-		proxy.Transport = transport
+		cacheTransport := httpcache.NewTransport(cache)
+		cacheTransport.Transport = normalizedTransport
+
+		proxy.Transport = &WebSocketAwareTransport{
+			DefaultTransport: baseTransport,
+			CacheTransport:   cacheTransport,
+		}
+	} else {
+		proxy.Transport = &WebSocketAwareTransport{
+			DefaultTransport: baseTransport,
+			CacheTransport:   nil,
+		}
 	}
 
 	originalDirector := proxy.Director
@@ -93,6 +122,11 @@ func New(target *url.URL, cfg *config.Config) *httputil.ReverseProxy {
 	}
 
 	proxy.ModifyResponse = func(resp *http.Response) error {
+		// Do not modify WebSocket upgrade responses
+		if resp.StatusCode == http.StatusSwitchingProtocols {
+			return nil
+		}
+
 		// Add Via header for clean traffic identification
 		resp.Header.Set("Via", "ddos-mitigator")
 
