@@ -1,0 +1,8 @@
+services:
+  ddos-proxy:
+    build: .
+    network_mode: "host"
+    environment:
+      # Required: The URL of the backend service to proxy requests to
+      - PROXY_BACKEND_URL=http://localhost:8081 # Change to your actual backend URL
+    restart: unless-stopped
