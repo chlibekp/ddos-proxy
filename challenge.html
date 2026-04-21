@@ -1,1 +1,63 @@
-<!DOCTYPE html><html><head><meta charset="UTF-8"><link rel="icon" href="data:,"><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script><script>function submitForm(){document.getElementById("challenge-form").submit()}</script><style>body{display:flex;justify-content:center;align-items:center;height:100vh;margin:0;background:#000000;color:#ffffff}.cf-turnstile{display:inline-block}</style></head><body><form id="challenge-form" method="POST" action="/challenge/verify"><input type="hidden" name="original_url" value="{{.OriginalURL}}"><div class="cf-turnstile" data-sitekey="{{.SiteKey}}" data-callback="submitForm"></div></form></body></html>
+<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <link rel="icon" href="data:,">
+    <script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script>
+    <script>
+        function submitForm() {
+            document.getElementById("challenge-form").submit();
+        }
+    </script>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+            background: #000000;
+            color: #ffffff;
+            font-family: sans-serif;
+        }
+        .cf-turnstile {
+            margin-bottom: 20px;
+        }
+        .footer {
+            font-size: 0.9rem;
+            color: #666666;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .footer a {
+            color: #aaaaaa;
+            text-decoration: none;
+        }
+        .footer a:hover {
+            color: #ffffff;
+        }
+        .footer span {
+            animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.5;
+            }
+        }
+    </style>
+</head>
+<body>
+    <form id="challenge-form" method="POST" action="/challenge/verify">
+        <input type="hidden" name="original_url" value="{{.OriginalURL}}">
+        <div class="cf-turnstile" data-sitekey="{{.SiteKey}}" data-callback="submitForm"></div>
+    </form>
+    <div class="footer">
+        <span>DDoS protection by <a href="https://hegy.xyz" target="_blank" rel="noopener noreferrer">Hegy.xyz</a></span>
+    </div>
+</body>
+</html>
