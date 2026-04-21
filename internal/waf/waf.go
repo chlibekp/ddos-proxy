@@ -113,7 +113,7 @@ func (m *Manager) verifyTurnstile(responseToken, remoteIP string) bool {
 
 func (m *Manager) serveChallenge(w http.ResponseWriter, r *http.Request, errMsg string) {
 	ip := m.getClientIP(r)
-	state := m.getClientState(ip)
+	state := m.getClientState(ip, r.Host)
 
 	state.mu.Lock()
 	if state.powSalt == "" {
@@ -187,7 +187,7 @@ func (m *Manager) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
-		state := m.getClientState(ip)
+		state := m.getClientState(ip, r.Host)
 		state.mu.Lock()
 		salt := state.powSalt
 		state.mu.Unlock()
@@ -209,7 +209,7 @@ func (m *Manager) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 	}
 
 	// Mark IP as verified
-	state := m.getClientState(ip)
+	state := m.getClientState(ip, r.Host)
 	state.mu.Lock()
 	state.violationCount = 0
 	state.challengeServed = false
@@ -233,15 +233,21 @@ func (m *Manager) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, originalURL, http.StatusFound)
 }
 
-func (m *Manager) getClientState(ip string) *ClientState {
-	val, ok := m.ipStates.Load(ip)
+func (m *Manager) getClientState(ip, host string) *ClientState {
+	h, _, err := net.SplitHostPort(host)
+	if err != nil {
+		h = host // Might not have a port
+	}
+	key := ip + "|" + h
+
+	val, ok := m.ipStates.Load(key)
 	if ok {
 		return val.(*ClientState)
 	}
 	state := &ClientState{
 		lastSeen: time.Now(),
 	}
-	actual, loaded := m.ipStates.LoadOrStore(ip, state)
+	actual, loaded := m.ipStates.LoadOrStore(key, state)
 	if loaded {
 		return actual.(*ClientState)
 	}
@@ -339,7 +345,7 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 		ip := m.getClientIP(r)
 
 		// Check if IP is blocked
-		state := m.getClientState(ip)
+		state := m.getClientState(ip, r.Host)
 		state.mu.Lock()
 		state.lastSeen = time.Now()
 		if state.blocked {
