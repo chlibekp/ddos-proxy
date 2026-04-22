@@ -129,6 +129,29 @@ func main() {
 			},
 		}
 		server.TLSConfig = m.TLSConfig()
+
+		// Start HTTP redirect server for Let's Encrypt HTTP-01 challenges and HTTPS redirection
+		go func() {
+			redirectHandler := m.HTTPHandler(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				target := "https://" + r.Host + r.URL.Path
+				if len(r.URL.RawQuery) > 0 {
+					target += "?" + r.URL.RawQuery
+				}
+				http.Redirect(w, r, target, http.StatusMovedPermanently)
+			}))
+
+			redirectSrv := &http.Server{
+				Addr:         ":" + cfg.HTTPPort,
+				Handler:      redirectHandler,
+				ReadTimeout:  10 * time.Second,
+				WriteTimeout: 10 * time.Second,
+			}
+
+			slog.Info("Starting HTTP to HTTPS redirect server", "port", cfg.HTTPPort)
+			if err := redirectSrv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("HTTP redirect server failed", "error", err)
+			}
+		}()
 	}
 
 	stop := make(chan os.Signal, 1)

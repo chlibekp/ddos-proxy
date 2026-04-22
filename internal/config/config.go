@@ -11,6 +11,7 @@ import (
 type Config struct {
 	BackendURL              string
 	Port                    string
+	HTTPPort                string
 	MaxReqPerSec            int64
 	MaxConnPerSec           int64
 	VerifyTime              time.Duration
@@ -43,6 +44,11 @@ func Load() (*Config, error) {
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
+	}
+
+	httpPort := os.Getenv("PROXY_HTTP_PORT")
+	if httpPort == "" {
+		httpPort = "80"
 	}
 
 	maxReq := int64(300)
@@ -160,6 +166,7 @@ func Load() (*Config, error) {
 	return &Config{
 		BackendURL:              backendURL,
 		Port:                    port,
+		HTTPPort:                httpPort,
 		MaxReqPerSec:            maxReq,
 		MaxConnPerSec:           maxConn,
 		VerifyTime:              verifyTime,
