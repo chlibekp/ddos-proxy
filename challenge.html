@@ -82,9 +82,6 @@
             const availableCores = navigator.hardwareConcurrency || 4;
             const workerCount = Math.max(1, Math.min(maxWorkers, availableCores));
             const statusElement = document.querySelector(".status");
-            if (statusElement && workerCount > 1) {
-                statusElement.textContent = "Checking your browser with " + workerCount + " threads";
-            }
 
             const workerURL = createPoWWorkerURL();
             const workers = [];
