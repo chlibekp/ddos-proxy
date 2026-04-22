@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"html/template"
 	"log/slog"
 	"net"
@@ -11,6 +12,8 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+
+	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/hegy/ddos-proxy/internal/config"
 	"github.com/hegy/ddos-proxy/internal/limiter"
@@ -93,6 +96,41 @@ func main() {
 		},
 	}
 
+	if cfg.EnableSSL {
+		// Ensure the certs directory exists
+		if err := os.MkdirAll("certs", 0700); err != nil {
+			slog.Error("Failed to create certs directory", "error", err)
+			os.Exit(1)
+		}
+
+		m := &autocert.Manager{
+			Cache:  autocert.DirCache("certs"),
+			Prompt: autocert.AcceptTOS,
+			HostPolicy: func(ctx context.Context, host string) error {
+				req, err := http.NewRequestWithContext(ctx, "GET", cfg.BackendURL+"/", nil)
+				if err != nil {
+					return err
+				}
+				req.Host = host
+
+				client := &http.Client{
+					Timeout: 5 * time.Second,
+				}
+				resp, err := client.Do(req)
+				if err != nil {
+					return err
+				}
+				defer resp.Body.Close()
+
+				if resp.StatusCode != http.StatusOK {
+					return fmt.Errorf("backend did not respond with 200 OK on root, got %d", resp.StatusCode)
+				}
+				return nil
+			},
+		}
+		server.TLSConfig = m.TLSConfig()
+	}
+
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
@@ -105,10 +143,18 @@ func main() {
 			"mitigation_time", cfg.MitigationTime,
 			"always_on", cfg.AlwaysOn,
 			"prometheus_enabled", cfg.PrometheusEnabled,
+			"ssl_enabled", cfg.EnableSSL,
 		)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			slog.Error("Server failed", "error", err)
-			os.Exit(1)
+		if cfg.EnableSSL {
+			if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
+				slog.Error("Server failed", "error", err)
+				os.Exit(1)
+			}
+		} else {
+			if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+				slog.Error("Server failed", "error", err)
+				os.Exit(1)
+			}
 		}
 	}()
 

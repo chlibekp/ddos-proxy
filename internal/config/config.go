@@ -29,6 +29,7 @@ type Config struct {
 	MaxTimeouts             int
 	TimeoutThreshold        time.Duration
 	CacheEnabled            bool
+	EnableSSL               bool
 }
 
 // Load loads the configuration from environment variables.
@@ -151,6 +152,11 @@ func Load() (*Config, error) {
 		cacheEnabled = true
 	}
 
+	enableSSL := false
+	if s := os.Getenv("PROXY_ENABLE_SSL"); s == "true" || s == "1" {
+		enableSSL = true
+	}
+
 	return &Config{
 		BackendURL:              backendURL,
 		Port:                    port,
@@ -172,5 +178,6 @@ func Load() (*Config, error) {
 		MaxTimeouts:             maxTimeouts,
 		TimeoutThreshold:        timeoutThreshold,
 		CacheEnabled:            cacheEnabled,
+		EnableSSL:               enableSSL,
 	}, nil
 }

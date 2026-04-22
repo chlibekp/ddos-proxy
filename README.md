@@ -40,6 +40,7 @@ The proxy is configured via environment variables.
 | `PROXY_MAX_TIMEOUTS` | `5` | Number of timeouts/long requests allowed before triggering mitigation mode. |
 | `PROXY_TIMEOUT_THRESHOLD` | `5s` | Duration threshold to consider a request as "long" (e.g., `5s`, `10s`). |
 | `PROXY_CACHE_ENABLED` | `false` | If `true` or `1`, enables disk-based HTTP caching for responses with valid `Cache-Control` headers. |
+| `PROXY_ENABLE_SSL` | `false` | If `true`, enables automatic HTTPS using Let's Encrypt (requires port 443). The backend must return 200 OK on the root (`/`) path to generate a certificate. |
 
 ## Usage
 
