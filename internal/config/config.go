@@ -32,6 +32,7 @@ type Config struct {
 	CacheEnabled            bool
 	EnableSSL               bool
 	XDPInterface            string
+	PoWDifficulty           int
 }
 
 // Load loads the configuration from environment variables.
@@ -164,6 +165,13 @@ func Load() (*Config, error) {
 		enableSSL = true
 	}
 
+	powDifficulty := 5
+	if s := os.Getenv("PROXY_POW_DIFFICULTY"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v > 0 {
+			powDifficulty = v
+		}
+	}
+
 	xdpInterface := os.Getenv("PROXY_XDP_INTERFACE")
 
 	return &Config{
@@ -190,5 +198,6 @@ func Load() (*Config, error) {
 		CacheEnabled:            cacheEnabled,
 		EnableSSL:               enableSSL,
 		XDPInterface:            xdpInterface,
+		PoWDifficulty:           powDifficulty,
 	}, nil
 }

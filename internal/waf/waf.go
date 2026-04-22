@@ -124,6 +124,7 @@ func (m *Manager) serveChallenge(w http.ResponseWriter, r *http.Request, errMsg 
 		rand.Read(b)
 		state.powSalt = hex.EncodeToString(b)
 	}
+	state.challengeServedAt = time.Now()
 	salt := state.powSalt
 	state.mu.Unlock()
 
@@ -132,7 +133,7 @@ func (m *Manager) serveChallenge(w http.ResponseWriter, r *http.Request, errMsg 
 		SiteKey:       m.cfg.TurnstileSiteKey,
 		OriginalURL:   r.URL.String(),
 		PoWSalt:       salt,
-		PoWDifficulty: 4,
+		PoWDifficulty: m.cfg.PoWDifficulty,
 	}
 
 	w.Header().Set("X-Mitigation", "challenge")
@@ -193,6 +194,7 @@ func (m *Manager) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 		state := m.getClientState(ip, r.Host)
 		state.mu.Lock()
 		salt := state.powSalt
+		servedAt := state.challengeServedAt
 		state.mu.Unlock()
 
 		if salt == "" {
@@ -200,9 +202,18 @@ func (m *Manager) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 
+		if time.Since(servedAt) < 2*time.Second {
+			if m.cfg.PrometheusEnabled {
+				metrics.DroppedRequests.WithLabelValues("challenge_too_fast").Inc()
+			}
+			m.serveChallenge(w, r, "Challenge solved too quickly, please try again")
+			return
+		}
+
 		hash := sha256.Sum256([]byte(salt + nonce))
 		hashHex := hex.EncodeToString(hash[:])
-		if !strings.HasPrefix(hashHex, "0000") {
+		targetPrefix := strings.Repeat("0", m.cfg.PoWDifficulty)
+		if !strings.HasPrefix(hashHex, targetPrefix) {
 			if m.cfg.PrometheusEnabled {
 				metrics.DroppedRequests.WithLabelValues("challenge_pow_failed").Inc()
 			}

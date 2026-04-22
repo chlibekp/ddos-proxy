@@ -10,9 +10,10 @@ type ClientState struct {
 	mu              sync.Mutex
 	blocked         bool
 	blockedAt       time.Time
-	violationCount  int
-	challengeServed bool
-	lastSeen        time.Time
+	violationCount    int
+	challengeServed   bool
+	challengeServedAt time.Time
+	lastSeen          time.Time
 	verified        bool
 	verifiedAt      time.Time
 	powSalt         string

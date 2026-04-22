@@ -21,13 +21,18 @@
         }
 
         async function solvePoW() {
+            const startTime = Date.now();
             const salt = "{{.PoWSalt}}";
-            const targetPrefix = "0000"; // Difficulty 4
+            const targetPrefix = "0".repeat({{.PoWDifficulty}});
             let nonce = 0;
 
             while (true) {
                 const hash = await sha256(salt + nonce);
                 if (hash.startsWith(targetPrefix)) {
+                    const elapsed = Date.now() - startTime;
+                    if (elapsed < 2000) {
+                        await new Promise(resolve => setTimeout(resolve, 2000 - elapsed));
+                    }
                     document.getElementById("pow-nonce").value = nonce;
                     document.getElementById("challenge-form").submit();
                     return;
@@ -51,22 +56,65 @@
             flex-direction: column;
             justify-content: center;
             align-items: center;
-            height: 100vh;
+            min-height: 100vh;
             margin: 0;
             background: #000000;
             color: #ffffff;
-            font-family: sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
             font-size: 16px;
+            line-height: 1.4;
+            position: relative;
+        }
+        #challenge-form {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 18px;
+        }
+        .status {
+            position: relative;
+            font-size: 1.6rem;
+            font-weight: 500;
+            letter-spacing: 0.01em;
+            color: #7a7a7a;
+            text-align: center;
+            padding: 0 24px;
+            background: linear-gradient(90deg, #666666 0%, #666666 35%, #ffffff 50%, #666666 65%, #666666 100%);
+            background-size: 220% 100%;
+            background-position: 120% 50%;
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+            animation: status-blink 1.8s ease-in-out infinite, status-shimmer 2.4s linear infinite;
+        }
+        @keyframes status-blink {
+            0%, 100% {
+                opacity: 0.72;
+            }
+            50% {
+                opacity: 1;
+            }
+        }
+        @keyframes status-shimmer {
+            0% {
+                background-position: 120% 50%;
+            }
+            100% {
+                background-position: -20% 50%;
+            }
         }
         .cf-turnstile {
-            margin-bottom: 20px;
+            margin: 0;
         }
         .footer {
+            position: absolute;
+            bottom: 28px;
+            left: 50%;
+            transform: translateX(-50%);
             font-size: 0.9rem;
             color: #666666;
-            display: flex;
-            align-items: center;
-            gap: 8px;
+            text-align: center;
+            width: calc(100% - 40px);
         }
         .footer a {
             color: #aaaaaa;
@@ -75,31 +123,24 @@
         .footer a:hover {
             color: #ffffff;
         }
-        .footer span {
-            animation: pulse 1.5s cubic-bezier(0.4, 0, 0.6, 1) infinite;
-        }
-        @keyframes pulse {
-            0%, 100% {
-                opacity: 1;
-            }
-            50% {
-                opacity: 0.5;
-            }
-        }
         @media (max-width: 600px) {
             body {
                 font-size: 18px;
             }
+            .status {
+                font-size: 1.35rem;
+                padding: 0 20px;
+            }
             .footer {
                 font-size: 1.1rem;
-                text-align: center;
-                padding: 0 20px;
+                bottom: 24px;
             }
         }
     </style>
 </head>
 <body>
     <form id="challenge-form" method="POST" action="/challenge/verify">
+        <div class="status">Checking your browser</div>
         <input type="hidden" name="original_url" value="{{.OriginalURL}}">
         {{if .SiteKey}}
         <div class="cf-turnstile" data-sitekey="{{.SiteKey}}" data-callback="submitForm"></div>

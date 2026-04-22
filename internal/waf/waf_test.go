@@ -47,7 +47,7 @@ func TestBlockAction(t *testing.T) {
 		VerifyTime:  10 * time.Minute,
 	}
 	rl := limiter.New()
-	m := NewManager(cfg, rl, nil)
+	m := NewManager(cfg, rl, nil, nil)
 
 	// Simulate a blocked client
 	// We need to access internal state. Since we are in package waf, we can use getClientState.
@@ -55,15 +55,16 @@ func TestBlockAction(t *testing.T) {
 	// Since we are in the same package, we can access them.
 
 	ip := "127.0.0.1"
+	host := "example.com"
 	// Ensure the state exists
-	_ = m.getClientState(ip)
+	_ = m.getClientState(ip, host)
 
 	// We need to set the state to blocked.
 	// Since getClientState returns the struct pointer, we can modify it directly.
 	// We need to use Range or similar to find it if we don't have direct access,
 	// but getClientState gives us the pointer.
 
-	state := m.getClientState(ip)
+	state := m.getClientState(ip, host)
 	state.mu.Lock()
 	state.blocked = true
 	state.mu.Unlock()

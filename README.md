@@ -27,6 +27,7 @@ The proxy is configured via environment variables.
 | `PORT` | `8080` | The port the proxy listens on. |
 | `PROXY_MAX_REQ` | `300` | Max global requests per second before triggering mitigation. |
 | `PROXY_MAX_CONN` | `50` | Max global new connections per second before triggering mitigation. |
+| `PROXY_POW_DIFFICULTY` | `5` | The difficulty level (number of leading zeros) for the native Proof-of-Work challenge. Higher values require more CPU power from the client. |
 | `PROXY_MITIGATION_TIME` | `5m` | Duration to keep mitigation active after thresholds are no longer exceeded (e.g., `5m`, `300s`). |
 | `PROXY_VERIFY_TIME` | `5m` | Duration for which a user remains verified after solving a CAPTCHA. |
 | `PROXY_ALWAYS_ON` | `false` | If `true`, the challenge is served for every request regardless of rate. |
