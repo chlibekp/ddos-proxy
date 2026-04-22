@@ -29,28 +29,51 @@ struct bpf_map_def SEC("maps") blocklist = {
     .max_entries = 100000,
 };
 
+struct stats {
+    __u64 allowed;
+    __u64 blocked;
+};
+
+struct bpf_map_def SEC("maps") xdp_stats = {
+    .type = BPF_MAP_TYPE_ARRAY,
+    .key_size = sizeof(__u32),
+    .value_size = sizeof(struct stats),
+    .max_entries = 1,
+};
+
 SEC("xdp")
 int xdp_drop_func(struct xdp_md *ctx) {
+    __u32 stats_key = 0;
+    struct stats *st = bpf_map_lookup_elem(&xdp_stats, &stats_key);
+
     void *data_end = (void *)(long)ctx->data_end;
     void *data = (void *)(long)ctx->data;
 
     struct ethhdr *eth = data;
-    if ((void *)(eth + 1) > data_end)
+    if ((void *)(eth + 1) > data_end) {
+        if (st) __sync_fetch_and_add(&st->allowed, 1);
         return XDP_PASS;
+    }
 
-    if (eth->h_proto != bpf_htons(ETH_P_IP))
+    if (eth->h_proto != bpf_htons(ETH_P_IP)) {
+        if (st) __sync_fetch_and_add(&st->allowed, 1);
         return XDP_PASS;
+    }
 
     struct iphdr *ip = data + sizeof(*eth);
-    if ((void *)(ip + 1) > data_end)
+    if ((void *)(ip + 1) > data_end) {
+        if (st) __sync_fetch_and_add(&st->allowed, 1);
         return XDP_PASS;
+    }
 
     __u32 src_ip = ip->saddr;
     __u8 *blocked = bpf_map_lookup_elem(&blocklist, &src_ip);
     if (blocked) {
+        if (st) __sync_fetch_and_add(&st->blocked, 1);
         return XDP_DROP;
     }
 
+    if (st) __sync_fetch_and_add(&st->allowed, 1);
     return XDP_PASS;
 }
 

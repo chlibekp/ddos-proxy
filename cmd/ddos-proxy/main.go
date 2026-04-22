@@ -60,6 +60,20 @@ func main() {
 		}
 		defer blocker.Close()
 		xdpBlocker = blocker
+
+		// Start a goroutine to print XDP stats every second
+		go func() {
+			ticker := time.NewTicker(1 * time.Second)
+			defer ticker.Stop()
+			for range ticker.C {
+				stats, err := blocker.GetStats()
+				if err == nil {
+					slog.Info("XDP Stats", "ALLOWED", stats.Allowed, "BLOCKED", stats.Blocked)
+				} else {
+					slog.Error("Failed to get XDP stats", "error", err)
+				}
+			}
+		}()
 	} else {
 		slog.Info("XDP blocking is disabled (PROXY_XDP_INTERFACE not set)")
 	}

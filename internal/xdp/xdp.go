@@ -13,7 +13,13 @@ import (
 type Blocker interface {
 	BlockIP(ipStr string) error
 	UnblockIP(ipStr string) error
+	GetStats() (Stats, error)
 	Close() error
+}
+
+type Stats struct {
+	Allowed uint64
+	Blocked uint64
 }
 
 type XDPBlocker struct {
@@ -78,6 +84,14 @@ func (x *XDPBlocker) UnblockIP(ipStr string) error {
 	return x.objs.Blocklist.Delete(key)
 }
 
+// GetStats returns the current XDP block/allow statistics.
+func (x *XDPBlocker) GetStats() (Stats, error) {
+	var stats Stats
+	key := uint32(0)
+	err := x.objs.XdpStats.Lookup(key, &stats)
+	return stats, err
+}
+
 // Close removes the XDP program and closes BPF maps.
 func (x *XDPBlocker) Close() error {
 	var err1, err2 error
@@ -85,7 +99,7 @@ func (x *XDPBlocker) Close() error {
 		err1 = x.l.Close()
 	}
 	err2 = x.objs.Close()
-	
+
 	if err1 != nil {
 		return err1
 	}
