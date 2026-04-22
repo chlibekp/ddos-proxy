@@ -65,10 +65,45 @@ func main() {
 		go func() {
 			ticker := time.NewTicker(1 * time.Second)
 			defer ticker.Stop()
+
+			var prevAllowed, prevBlocked uint64
+			// Initialize with current stats to avoid huge spikes if XDP was already running
+			if initialStats, err := blocker.GetStats(); err == nil {
+				prevAllowed = initialStats.Allowed
+				prevBlocked = initialStats.Blocked
+			}
+
 			for range ticker.C {
 				stats, err := blocker.GetStats()
 				if err == nil {
-					slog.Info("XDP Stats", "ALLOWED", stats.Allowed, "BLOCKED", stats.Blocked)
+					var deltaAllowed, deltaBlocked uint64
+					if stats.Allowed >= prevAllowed {
+						deltaAllowed = stats.Allowed - prevAllowed
+					} else {
+						// eBPF counters reset
+						deltaAllowed = stats.Allowed
+					}
+
+					if stats.Blocked >= prevBlocked {
+						deltaBlocked = stats.Blocked - prevBlocked
+					} else {
+						deltaBlocked = stats.Blocked
+					}
+
+					if deltaAllowed > 0 || deltaBlocked > 0 {
+						slog.Info("XDP Stats (per sec)", "ALLOWED", deltaAllowed, "BLOCKED", deltaBlocked)
+					}
+
+					if cfg.PrometheusEnabled {
+						if deltaAllowed > 0 {
+							metrics.XDPPackets.WithLabelValues("allowed").Add(float64(deltaAllowed))
+						}
+						if deltaBlocked > 0 {
+							metrics.XDPPackets.WithLabelValues("blocked").Add(float64(deltaBlocked))
+						}
+					}
+					prevAllowed = stats.Allowed
+					prevBlocked = stats.Blocked
 				} else {
 					slog.Error("Failed to get XDP stats", "error", err)
 				}

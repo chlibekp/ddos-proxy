@@ -31,6 +31,15 @@ var (
 		},
 		[]string{"reason"},
 	)
+
+	// XDPPackets counts the number of packets processed by the XDP program.
+	XDPPackets = promauto.NewCounterVec(
+		prometheus.CounterOpts{
+			Name: "ddos_proxy_xdp_packets_total",
+			Help: "The total number of packets processed by XDP",
+		},
+		[]string{"action"},
+	)
 )
 
 func init() {
@@ -39,4 +48,7 @@ func init() {
 	DroppedRequests.WithLabelValues("challenge_violation").Add(0)
 	DroppedRequests.WithLabelValues("whitelist_rate_limit").Add(0)
 	DroppedRequests.WithLabelValues("metrics_rate_limit").Add(0)
+
+	XDPPackets.WithLabelValues("allowed").Add(0)
+	XDPPackets.WithLabelValues("blocked").Add(0)
 }
