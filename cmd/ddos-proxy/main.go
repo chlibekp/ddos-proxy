@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"html/template"
+	"log"
 	"log/slog"
 	"net"
 	"net/http"
@@ -27,6 +29,7 @@ import (
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
+	stdLogger := log.New(logWriter{}, "", 0)
 
 	cfg, err := config.Load()
 	if err != nil {
@@ -154,6 +157,7 @@ func main() {
 		ReadTimeout:  10 * time.Second,
 		WriteTimeout: 10 * time.Second,
 		IdleTimeout:  120 * time.Second,
+		ErrorLog:     stdLogger,
 		ConnState: func(conn net.Conn, state http.ConnState) {
 			if state == http.StateNew {
 				rl.IncConn()
@@ -172,8 +176,10 @@ func main() {
 			Cache:  autocert.DirCache("certs"),
 			Prompt: autocert.AcceptTOS,
 			HostPolicy: func(ctx context.Context, host string) error {
+				slog.Info("ACME host policy check started", "host", host, "backend", cfg.BackendURL)
 				req, err := http.NewRequestWithContext(ctx, "GET", cfg.BackendURL+"/", nil)
 				if err != nil {
+					slog.Error("ACME host policy request creation failed", "host", host, "error", err)
 					return err
 				}
 				req.Host = host
@@ -183,17 +189,46 @@ func main() {
 				}
 				resp, err := client.Do(req)
 				if err != nil {
+					slog.Error("ACME host policy backend probe failed", "host", host, "backend", cfg.BackendURL, "error", err)
 					return err
 				}
 				defer resp.Body.Close()
 
 				if resp.StatusCode != http.StatusOK {
-					return fmt.Errorf("backend did not respond with 200 OK on root, got %d", resp.StatusCode)
+					err := fmt.Errorf("backend did not respond with 200 OK on root, got %d", resp.StatusCode)
+					slog.Error("ACME host policy rejected host", "host", host, "backend", cfg.BackendURL, "status_code", resp.StatusCode, "error", err)
+					return err
 				}
+				slog.Info("ACME host policy approved host", "host", host, "backend", cfg.BackendURL, "status_code", resp.StatusCode)
 				return nil
 			},
 		}
-		server.TLSConfig = m.TLSConfig()
+		tlsConfig := m.TLSConfig()
+		origGetCertificate := tlsConfig.GetCertificate
+		tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			slog.Info("TLS certificate request received",
+				"server_name", hello.ServerName,
+				"remote_addr", hello.Conn.RemoteAddr().String(),
+				"supported_protos", hello.SupportedProtos,
+			)
+
+			cert, err := origGetCertificate(hello)
+			if err != nil {
+				slog.Error("TLS certificate request failed",
+					"server_name", hello.ServerName,
+					"remote_addr", hello.Conn.RemoteAddr().String(),
+					"error", err,
+				)
+				return nil, err
+			}
+
+			slog.Info("TLS certificate request succeeded",
+				"server_name", hello.ServerName,
+				"remote_addr", hello.Conn.RemoteAddr().String(),
+			)
+			return cert, nil
+		}
+		server.TLSConfig = tlsConfig
 
 		// Start HTTP redirect server for Let's Encrypt HTTP-01 challenges and HTTPS redirection
 		go func() {
@@ -202,14 +237,21 @@ func main() {
 				if len(r.URL.RawQuery) > 0 {
 					target += "?" + r.URL.RawQuery
 				}
+				slog.Info("HTTP redirect request received", "host", r.Host, "path", r.URL.Path, "target", target, "remote_addr", r.RemoteAddr)
 				http.Redirect(w, r, target, http.StatusMovedPermanently)
 			}))
 
 			redirectSrv := &http.Server{
-				Addr:         ":" + cfg.HTTPPort,
-				Handler:      redirectHandler,
+				Addr: ":" + cfg.HTTPPort,
+				Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.URL.Path == "/.well-known/acme-challenge/" || len(r.URL.Path) > len("/.well-known/acme-challenge/") && r.URL.Path[:len("/.well-known/acme-challenge/")] == "/.well-known/acme-challenge/" {
+						slog.Info("ACME HTTP-01 challenge request received", "host", r.Host, "path", r.URL.Path, "remote_addr", r.RemoteAddr)
+					}
+					redirectHandler.ServeHTTP(w, r)
+				}),
 				ReadTimeout:  10 * time.Second,
 				WriteTimeout: 10 * time.Second,
+				ErrorLog:     stdLogger,
 			}
 
 			slog.Info("Starting HTTP to HTTPS redirect server", "port", cfg.HTTPPort)
@@ -257,4 +299,17 @@ func main() {
 	}
 
 	slog.Info("Server exited properly")
+}
+
+type logWriter struct{}
+
+func (logWriter) Write(p []byte) (int, error) {
+	msg := string(p)
+	for len(msg) > 0 && (msg[len(msg)-1] == '\n' || msg[len(msg)-1] == '\r') {
+		msg = msg[:len(msg)-1]
+	}
+	if msg != "" {
+		slog.Error("HTTP server internal log", "message", msg)
+	}
+	return len(p), nil
 }
