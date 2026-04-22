@@ -1,12 +1,15 @@
 # Use a minimal base image for the final build
-FROM golang:1.25-alpine AS builder
+FROM golang:alpine AS builder
+
+# Install dependencies for building BPF (clang, llvm, kernel headers)
+RUN apk add --no-cache clang llvm libbpf-dev linux-headers make
 
 # Set the working directory inside the container
 WORKDIR /app
 
 # Copy go.mod and go.sum (if present) first for caching dependencies
 COPY go.mod ./
-# COPY go.sum ./ # Uncomment if go.sum exists
+COPY go.sum ./ 
 
 # Download dependencies
 RUN go mod download
@@ -14,14 +17,17 @@ RUN go mod download
 # Copy the rest of the source code
 COPY . .
 
+# Generate eBPF bytecodes
+RUN go generate ./...
+
 # Build the application statically linked
 RUN CGO_ENABLED=0 GOOS=linux go build -o proxy cmd/ddos-proxy/main.go
 
-# Use a scratch image or alpine for the smallest footprint
+# Use a minimal image for the final build
 FROM alpine:latest
 
-# Install ca-certificates for HTTPS support
-RUN apk --no-cache add ca-certificates
+# Install ca-certificates for HTTPS support and libbpf for eBPF
+RUN apk --no-cache add ca-certificates libbpf
 
 WORKDIR /root/
 

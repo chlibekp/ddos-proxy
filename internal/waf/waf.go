@@ -19,6 +19,7 @@ import (
 	"github.com/hegy/ddos-proxy/internal/config"
 	"github.com/hegy/ddos-proxy/internal/limiter"
 	"github.com/hegy/ddos-proxy/internal/metrics"
+	"github.com/hegy/ddos-proxy/internal/xdp"
 )
 
 // Manager holds the application state and protection logic.
@@ -26,6 +27,7 @@ type Manager struct {
 	cfg             *config.Config
 	rl              *limiter.RateLimiter
 	templates       *template.Template
+	xdp             xdp.Blocker
 	mitigationUntil int64    // Atomic unix timestamp
 	timeoutCount    int64    // Atomic counter for long/timed-out requests
 	ipStates        sync.Map // map[string]*ClientState
@@ -41,11 +43,12 @@ type ChallengeData struct {
 }
 
 // NewManager creates a new WAF manager.
-func NewManager(cfg *config.Config, rl *limiter.RateLimiter, tmpl *template.Template) *Manager {
+func NewManager(cfg *config.Config, rl *limiter.RateLimiter, tmpl *template.Template, xdpBlocker xdp.Blocker) *Manager {
 	manager := &Manager{
 		cfg:       cfg,
 		rl:        rl,
 		templates: tmpl,
+		xdp:       xdpBlocker,
 	}
 
 	// Start cleanup ticker
@@ -233,6 +236,26 @@ func (m *Manager) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 	http.Redirect(w, r, originalURL, http.StatusFound)
 }
 
+func (m *Manager) blockL4(ip string) {
+	if m.xdp == nil {
+		return
+	}
+	slog.Info("Blocking IP on L4 via XDP", "ip", ip)
+	if err := m.xdp.BlockIP(ip); err != nil {
+		slog.Error("Failed to add XDP block rule", "ip", ip, "error", err)
+	}
+}
+
+func (m *Manager) unblockL4(ip string) {
+	if m.xdp == nil {
+		return
+	}
+	slog.Info("Unblocking IP on L4 via XDP", "ip", ip)
+	if err := m.xdp.UnblockIP(ip); err != nil {
+		slog.Error("Failed to remove XDP block rule", "ip", ip, "error", err)
+	}
+}
+
 func (m *Manager) getClientState(ip, host string) *ClientState {
 	h, _, err := net.SplitHostPort(host)
 	if err != nil {
@@ -286,6 +309,14 @@ func (m *Manager) cleanup() {
 			state.blocked = false
 			state.violationCount = 0
 			state.challengeServed = false
+			state.errorCount = 0
+			if state.l4Blocked {
+				state.l4Blocked = false
+				parts := strings.Split(key.(string), "|")
+				if len(parts) > 0 {
+					go m.unblockL4(parts[0])
+				}
+			}
 		}
 
 		// Cleanup idle connections (e.g. 10 min inactivity)
@@ -349,8 +380,37 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 		state.mu.Lock()
 		state.lastSeen = time.Now()
 		if state.blocked {
+			// Handle L4 blocking if Cloudflare and ForwardedFor are not used
+			if !m.cfg.CloudflareSupport && !m.cfg.UseForwardedFor {
+				if !state.l4Blocked {
+					state.errorCount++
+					if state.errorCount > 5 {
+						state.l4Blocked = true
+						go m.blockL4(ip)
+						state.mu.Unlock()
+						// L4 blocked, close connection immediately as fallback before iptables takes effect
+						if hijacker, ok := w.(http.Hijacker); ok {
+							if conn, _, err := hijacker.Hijack(); err == nil {
+								conn.Close()
+							}
+						}
+						return
+					}
+				} else {
+					// Already L4 blocked, connection should have been dropped by iptables
+					// Fallback: close connection immediately
+					state.mu.Unlock()
+					if hijacker, ok := w.(http.Hijacker); ok {
+						if conn, _, err := hijacker.Hijack(); err == nil {
+							conn.Close()
+						}
+					}
+					return
+				}
+			}
+
 			state.mu.Unlock()
-			// Hijack and close connection
+			// Hijack and close connection or send 403
 			if m.cfg.PrometheusEnabled {
 				metrics.DroppedRequests.WithLabelValues("blocked_ip").Inc()
 			}

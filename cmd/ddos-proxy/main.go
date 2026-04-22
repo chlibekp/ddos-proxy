@@ -20,6 +20,7 @@ import (
 	"github.com/hegy/ddos-proxy/internal/metrics"
 	"github.com/hegy/ddos-proxy/internal/proxy"
 	"github.com/hegy/ddos-proxy/internal/waf"
+	"github.com/hegy/ddos-proxy/internal/xdp"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 )
 
@@ -48,7 +49,22 @@ func main() {
 	}
 
 	rl := limiter.New()
-	wafManager := waf.NewManager(cfg, rl, tmpl)
+
+	var xdpBlocker xdp.Blocker
+	if cfg.XDPInterface != "" {
+		slog.Info("Initializing XDP blocker", "interface", cfg.XDPInterface)
+		blocker, err := xdp.InitXDP(cfg.XDPInterface)
+		if err != nil {
+			slog.Error("Failed to initialize XDP", "error", err)
+			os.Exit(1)
+		}
+		defer blocker.Close()
+		xdpBlocker = blocker
+	} else {
+		slog.Info("XDP blocking is disabled (PROXY_XDP_INTERFACE not set)")
+	}
+
+	wafManager := waf.NewManager(cfg, rl, tmpl, xdpBlocker)
 
 	// Start rate limiter reset ticker
 	go func() {

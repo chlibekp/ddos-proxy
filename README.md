@@ -12,6 +12,7 @@ A high-performance Go reverse proxy designed to protect backend services from DD
 - **Sticky Mitigation**: Mitigation mode stays active for a set duration after the attack subsides.
 - **Always-On Mode**: Option to permanently enable the challenge for all requests.
 - **Aggressive Blocking**: IPs that fail to solve the challenge and continue sending requests are blocked. The action is configurable (403 Forbidden or Close Connection).
+- **Hardware-Accelerated Layer 4 Blocking**: Uses eBPF/XDP to natively drop packets from malicious IPs directly at the NIC level, drastically reducing CPU overhead during intense volumetric attacks.
 - **User-Agent Whitelisting**: Allows trusted bots (e.g., Googlebot) to bypass challenges, subject to a separate global rate limit.
 - **Disk Caching**: Built-in HTTP caching layer that respects standard `Cache-Control` headers, reducing load on the backend.
 - **Prometheus Metrics**: Exposes a `/metrics` endpoint for monitoring, secured with a rate limit of 1 req/s per IP.
@@ -42,6 +43,7 @@ The proxy is configured via environment variables.
 | `PROXY_CACHE_ENABLED` | `false` | If `true` or `1`, enables disk-based HTTP caching for responses with valid `Cache-Control` headers. |
 | `PROXY_ENABLE_SSL` | `false` | If `true`, enables automatic HTTPS using Let's Encrypt (requires `PORT` to be set to 443). |
 | `PROXY_HTTP_PORT` | `80` | The port for the HTTP-to-HTTPS redirect server and Let's Encrypt HTTP-01 challenges (only used when SSL is enabled). |
+| `PROXY_XDP_INTERFACE` | `""` | Network interface to attach the XDP program to (e.g., `eth0`) for hardware-accelerated L4 blocking. Requires `NET_ADMIN`, `SYS_ADMIN`, and `BPF` capabilities in Docker. |
 
 ## Usage
 
@@ -98,8 +100,31 @@ Run the binary:
     -   If valid, the IP address is marked as **verified** for `PROXY_VERIFY_TIME`.
     -   The user is redirected to their original URL.
 7.  **Bypass**: Subsequent requests from a verified IP bypass the rate limiter and are proxied directly to the backend.
-8.  **Blocking**: If an IP receives a challenge but continues to send requests without solving it (more than 5 times), the IP is **blocked**, and its TCP connection is forcibly closed.
+8.  **Blocking**: If an IP receives a challenge but continues to send requests without solving it (more than 5 times), the IP is **blocked**, and its TCP connection is forcibly closed. If `PROXY_XDP_INTERFACE` is configured, the proxy will additionally drop packets from this IP at Layer 4 natively using eBPF/XDP.
 9.  **Recovery**: Mitigation Mode automatically turns off after `PROXY_MITIGATION_TIME` passes without rate violations (unless `PROXY_ALWAYS_ON` is set).
+
+## eBPF/XDP Requirements (Docker)
+
+If you are running `ddos-proxy` in Docker and want to utilize hardware-accelerated Layer 4 blocking with `PROXY_XDP_INTERFACE`, your container requires special privileges. Ensure your `docker-compose.yml` or `docker run` command is configured with:
+
+1. **Host Network Mode**: `network_mode: "host"` so XDP attaches to the host's NIC.
+2. **Capabilities**: `NET_ADMIN`, `SYS_ADMIN`, and `BPF`.
+
+Example `docker-compose.yml` snippet:
+
+```yaml
+services:
+  ddos-proxy:
+    build: .
+    network_mode: "host"
+    cap_add:
+      - NET_ADMIN
+      - SYS_ADMIN
+      - BPF
+    environment:
+      - PROXY_XDP_INTERFACE=eth0
+      - PROXY_BACKEND_URL=http://localhost:8081
+```
 
 ## Security Notes
 

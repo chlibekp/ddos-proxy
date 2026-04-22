@@ -16,4 +16,6 @@ type ClientState struct {
 	verified        bool
 	verifiedAt      time.Time
 	powSalt         string
+	errorCount      int
+	l4Blocked       bool
 }

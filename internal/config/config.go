@@ -31,6 +31,7 @@ type Config struct {
 	TimeoutThreshold        time.Duration
 	CacheEnabled            bool
 	EnableSSL               bool
+	XDPInterface            string
 }
 
 // Load loads the configuration from environment variables.
@@ -163,6 +164,8 @@ func Load() (*Config, error) {
 		enableSSL = true
 	}
 
+	xdpInterface := os.Getenv("PROXY_XDP_INTERFACE")
+
 	return &Config{
 		BackendURL:              backendURL,
 		Port:                    port,
@@ -186,5 +189,6 @@ func Load() (*Config, error) {
 		TimeoutThreshold:        timeoutThreshold,
 		CacheEnabled:            cacheEnabled,
 		EnableSSL:               enableSSL,
+		XDPInterface:            xdpInterface,
 	}, nil
 }
