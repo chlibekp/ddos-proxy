@@ -43,6 +43,7 @@ The proxy is configured via environment variables.
 | `PROXY_TIMEOUT_THRESHOLD` | `5s` | Duration threshold to consider a request as "long" (e.g., `5s`, `10s`). |
 | `PROXY_CACHE_ENABLED` | `false` | If `true` or `1`, enables disk-based HTTP caching for responses with valid `Cache-Control` headers. |
 | `PROXY_ENABLE_SSL` | `false` | If `true`, enables automatic HTTPS using Let's Encrypt (requires `PORT` to be set to 443). |
+| `PROXY_ACME_STAGING` | `false` | If `true`, uses Let's Encrypt staging instead of production for certificate issuance. Staging certificates are not trusted by browsers. |
 | `PROXY_HTTP_PORT` | `80` | The port for the HTTP-to-HTTPS redirect server and Let's Encrypt HTTP-01 challenges (only used when SSL is enabled). |
 | `PROXY_XDP_INTERFACE` | `""` | Network interface to attach the XDP program to (e.g., `eth0`) for hardware-accelerated L4 blocking. Requires `NET_ADMIN`, `SYS_ADMIN`, and `BPF` capabilities in Docker. |
 

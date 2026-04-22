@@ -31,6 +31,7 @@ type Config struct {
 	TimeoutThreshold        time.Duration
 	CacheEnabled            bool
 	EnableSSL               bool
+	ACMEStaging             bool
 	XDPInterface            string
 	PoWDifficulty           int
 }
@@ -165,6 +166,11 @@ func Load() (*Config, error) {
 		enableSSL = true
 	}
 
+	acmeStaging := false
+	if s := os.Getenv("PROXY_ACME_STAGING"); s == "true" || s == "1" {
+		acmeStaging = true
+	}
+
 	powDifficulty := 5
 	if s := os.Getenv("PROXY_POW_DIFFICULTY"); s != "" {
 		if v, err := strconv.Atoi(s); err == nil && v > 0 {
@@ -197,6 +203,7 @@ func Load() (*Config, error) {
 		TimeoutThreshold:        timeoutThreshold,
 		CacheEnabled:            cacheEnabled,
 		EnableSSL:               enableSSL,
+		ACMEStaging:             acmeStaging,
 		XDPInterface:            xdpInterface,
 		PoWDifficulty:           powDifficulty,
 	}, nil

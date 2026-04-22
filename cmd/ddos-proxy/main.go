@@ -16,6 +16,7 @@ import (
 	"syscall"
 	"time"
 
+	"golang.org/x/crypto/acme"
 	"golang.org/x/crypto/acme/autocert"
 
 	"github.com/hegy/ddos-proxy/internal/config"
@@ -204,6 +205,10 @@ func main() {
 				return nil
 			},
 		}
+		if cfg.ACMEStaging {
+			m.Client = &acme.Client{DirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory"}
+			slog.Warn("ACME staging is enabled; issued certificates will not be trusted by browsers")
+		}
 		tlsConfig := m.TLSConfig()
 		origGetCertificate := tlsConfig.GetCertificate
 		tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
@@ -276,6 +281,7 @@ func main() {
 			"always_on", cfg.AlwaysOn,
 			"prometheus_enabled", cfg.PrometheusEnabled,
 			"ssl_enabled", cfg.EnableSSL,
+			"acme_staging", cfg.ACMEStaging,
 		)
 		if cfg.EnableSSL {
 			if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
