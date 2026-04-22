@@ -20,10 +20,7 @@
             return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
         }
 
-        async function solvePoW() {
-            const startTime = Date.now();
-            const salt = "{{.PoWSalt}}";
-            const targetPrefix = "0".repeat({{.PoWDifficulty}});
+        async function solvePoWSingleThread(salt, targetPrefix, startTime) {
             let nonce = 0;
 
             while (true) {
@@ -38,13 +35,106 @@
                     return;
                 }
                 nonce++;
-                // Yield to main thread every 1000 iterations so UI doesn't freeze completely
                 if (nonce % 1000 === 0) {
                     await new Promise(resolve => setTimeout(resolve, 0));
                 }
             }
         }
-        
+
+        function createPoWWorkerURL() {
+            const workerSource = `
+                self.onmessage = async function(event) {
+                    const { salt, targetPrefix, startNonce, step } = event.data;
+                    const encoder = new TextEncoder();
+                    let nonce = startNonce;
+
+                    while (true) {
+                        const msgBuffer = encoder.encode(salt + nonce);
+                        const hashBuffer = await crypto.subtle.digest('SHA-256', msgBuffer);
+                        const hashArray = Array.from(new Uint8Array(hashBuffer));
+                        const hash = hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+
+                        if (hash.startsWith(targetPrefix)) {
+                            self.postMessage({ nonce: nonce });
+                            return;
+                        }
+
+                        nonce += step;
+                    }
+                };
+            `;
+
+            return URL.createObjectURL(new Blob([workerSource], { type: "application/javascript" }));
+        }
+
+        async function solvePoW() {
+            const startTime = Date.now();
+            const form = document.getElementById("challenge-form");
+            const salt = form.dataset.powSalt;
+            const targetPrefix = "0".repeat(parseInt(form.dataset.powDifficulty, 10));
+
+            if (typeof Worker === "undefined" || typeof URL.createObjectURL !== "function") {
+                await solvePoWSingleThread(salt, targetPrefix, startTime);
+                return;
+            }
+
+            const maxWorkers = 8;
+            const availableCores = navigator.hardwareConcurrency || 4;
+            const workerCount = Math.max(1, Math.min(maxWorkers, availableCores));
+            const statusElement = document.querySelector(".status");
+            if (statusElement && workerCount > 1) {
+                statusElement.textContent = "Checking your browser with " + workerCount + " threads";
+            }
+
+            const workerURL = createPoWWorkerURL();
+            const workers = [];
+            let solved = false;
+
+            const cleanup = function() {
+                for (const worker of workers) {
+                    worker.terminate();
+                }
+                URL.revokeObjectURL(workerURL);
+            };
+
+            for (let i = 0; i < workerCount; i++) {
+                const worker = new Worker(workerURL);
+                workers.push(worker);
+
+                worker.onmessage = async function(event) {
+                    if (solved) {
+                        return;
+                    }
+                    solved = true;
+                    cleanup();
+
+                    const elapsed = Date.now() - startTime;
+                    if (elapsed < 2000) {
+                        await new Promise(resolve => setTimeout(resolve, 2000 - elapsed));
+                    }
+
+                    document.getElementById("pow-nonce").value = event.data.nonce;
+                    form.submit();
+                };
+
+                worker.onerror = async function() {
+                    if (solved) {
+                        return;
+                    }
+                    solved = true;
+                    cleanup();
+                    await solvePoWSingleThread(salt, targetPrefix, startTime);
+                };
+
+                worker.postMessage({
+                    salt: salt,
+                    targetPrefix: targetPrefix,
+                    startNonce: i,
+                    step: workerCount
+                });
+            }
+        }
+
         window.onload = function() {
             solvePoW();
         };
@@ -139,7 +229,7 @@
     </style>
 </head>
 <body>
-    <form id="challenge-form" method="POST" action="/challenge/verify">
+    <form id="challenge-form" method="POST" action="/challenge/verify" data-pow-salt="{{.PoWSalt}}" data-pow-difficulty="{{.PoWDifficulty}}">
         <div class="status">Checking your browser</div>
         <input type="hidden" name="original_url" value="{{.OriginalURL}}">
         {{if .SiteKey}}
