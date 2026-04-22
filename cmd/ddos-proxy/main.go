@@ -12,6 +12,7 @@ import (
 	"net/url"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -206,9 +207,10 @@ func main() {
 		tlsConfig := m.TLSConfig()
 		origGetCertificate := tlsConfig.GetCertificate
 		tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
+			remoteAddr := clientHelloRemoteAddr(hello)
 			slog.Info("TLS certificate request received",
 				"server_name", hello.ServerName,
-				"remote_addr", hello.Conn.RemoteAddr().String(),
+				"remote_addr", remoteAddr,
 				"supported_protos", hello.SupportedProtos,
 			)
 
@@ -216,7 +218,7 @@ func main() {
 			if err != nil {
 				slog.Error("TLS certificate request failed",
 					"server_name", hello.ServerName,
-					"remote_addr", hello.Conn.RemoteAddr().String(),
+					"remote_addr", remoteAddr,
 					"error", err,
 				)
 				return nil, err
@@ -224,7 +226,7 @@ func main() {
 
 			slog.Info("TLS certificate request succeeded",
 				"server_name", hello.ServerName,
-				"remote_addr", hello.Conn.RemoteAddr().String(),
+				"remote_addr", remoteAddr,
 			)
 			return cert, nil
 		}
@@ -244,7 +246,7 @@ func main() {
 			redirectSrv := &http.Server{
 				Addr: ":" + cfg.HTTPPort,
 				Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-					if r.URL.Path == "/.well-known/acme-challenge/" || len(r.URL.Path) > len("/.well-known/acme-challenge/") && r.URL.Path[:len("/.well-known/acme-challenge/")] == "/.well-known/acme-challenge/" {
+					if strings.HasPrefix(r.URL.Path, "/.well-known/acme-challenge/") {
 						slog.Info("ACME HTTP-01 challenge request received", "host", r.Host, "path", r.URL.Path, "remote_addr", r.RemoteAddr)
 					}
 					redirectHandler.ServeHTTP(w, r)
@@ -304,12 +306,16 @@ func main() {
 type logWriter struct{}
 
 func (logWriter) Write(p []byte) (int, error) {
-	msg := string(p)
-	for len(msg) > 0 && (msg[len(msg)-1] == '\n' || msg[len(msg)-1] == '\r') {
-		msg = msg[:len(msg)-1]
-	}
+	msg := strings.TrimRight(string(p), "\r\n")
 	if msg != "" {
 		slog.Error("HTTP server internal log", "message", msg)
 	}
 	return len(p), nil
+}
+
+func clientHelloRemoteAddr(hello *tls.ClientHelloInfo) string {
+	if hello == nil || hello.Conn == nil || hello.Conn.RemoteAddr() == nil {
+		return ""
+	}
+	return hello.Conn.RemoteAddr().String()
 }
