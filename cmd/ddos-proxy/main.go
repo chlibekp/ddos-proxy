@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -169,6 +170,7 @@ func main() {
 	}
 
 	acmeDirectoryURL := ""
+	certCoordinator := newCertRequestCoordinator()
 	if cfg.EnableSSL {
 		// Ensure the certs directory exists
 		if err := os.MkdirAll("certs", 0700); err != nil {
@@ -240,16 +242,35 @@ func main() {
 		origGetCertificate := tlsConfig.GetCertificate
 		tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			remoteAddr := clientHelloRemoteAddr(hello)
+			host := normalizeServerName(hello)
 			slog.Info("TLS certificate request received",
-				"server_name", hello.ServerName,
+				"server_name", host,
 				"remote_addr", remoteAddr,
 				"supported_protos", hello.SupportedProtos,
 			)
 
+			waitCh, started, err := certCoordinator.Start(host)
+			if err != nil {
+				slog.Warn("TLS certificate request rejected during ACME cooldown",
+					"server_name", host,
+					"remote_addr", remoteAddr,
+					"error", err,
+				)
+				return nil, err
+			}
+			if !started {
+				result := <-waitCh
+				if result.err != nil {
+					return nil, result.err
+				}
+				return result.cert, nil
+			}
+
 			cert, err := origGetCertificate(hello)
+			certCoordinator.Finish(host, cert, err)
 			if err != nil {
 				slog.Error("TLS certificate request failed",
-					"server_name", hello.ServerName,
+					"server_name", host,
 					"remote_addr", remoteAddr,
 					"error", err,
 				)
@@ -257,7 +278,7 @@ func main() {
 			}
 
 			slog.Info("TLS certificate request succeeded",
-				"server_name", hello.ServerName,
+				"server_name", host,
 				"remote_addr", remoteAddr,
 			)
 			return cert, nil
@@ -382,4 +403,98 @@ func decodeACMEEABKey(value string) ([]byte, error) {
 	}
 
 	return nil, fmt.Errorf("unsupported EAB HMAC encoding: %w", lastErr)
+}
+
+const defaultCertRetryBackoff = time.Minute
+
+type certRequestCoordinator struct {
+	mu     sync.Mutex
+	states map[string]*certRequestState
+}
+
+type certRequestState struct {
+	inFlight    bool
+	waiters     []chan certRequestResult
+	nextAttempt time.Time
+	lastErr     string
+}
+
+type certRequestResult struct {
+	cert *tls.Certificate
+	err  error
+}
+
+func newCertRequestCoordinator() *certRequestCoordinator {
+	return &certRequestCoordinator{
+		states: make(map[string]*certRequestState),
+	}
+}
+
+func (c *certRequestCoordinator) Start(host string) (<-chan certRequestResult, bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	state := c.getState(host)
+	now := time.Now()
+	if !state.nextAttempt.IsZero() && now.Before(state.nextAttempt) {
+		return nil, false, fmt.Errorf("next certificate attempt for %q allowed in %s", host, time.Until(state.nextAttempt).Round(time.Second))
+	}
+
+	if state.inFlight {
+		waitCh := make(chan certRequestResult, 1)
+		state.waiters = append(state.waiters, waitCh)
+		return waitCh, false, nil
+	}
+
+	state.inFlight = true
+	return nil, true, nil
+}
+
+func (c *certRequestCoordinator) Finish(host string, cert *tls.Certificate, err error) {
+	c.mu.Lock()
+	state := c.getState(host)
+	state.inFlight = false
+
+	result := certRequestResult{cert: cert, err: err}
+	waiters := state.waiters
+	state.waiters = nil
+
+	if err == nil {
+		state.nextAttempt = time.Time{}
+		state.lastErr = ""
+	} else {
+		backoff := defaultCertRetryBackoff
+		if retryAfter, ok := acme.RateLimit(err); ok && retryAfter > 0 {
+			backoff = retryAfter
+		}
+		state.nextAttempt = time.Now().Add(backoff)
+		state.lastErr = err.Error()
+		slog.Warn("ACME certificate acquisition backoff enabled",
+			"server_name", host,
+			"retry_after", backoff.String(),
+			"error", err,
+		)
+	}
+	c.mu.Unlock()
+
+	for _, waitCh := range waiters {
+		waitCh <- result
+		close(waitCh)
+	}
+}
+
+func (c *certRequestCoordinator) getState(host string) *certRequestState {
+	state, ok := c.states[host]
+	if !ok {
+		state = &certRequestState{}
+		c.states[host] = state
+	}
+	return state
+}
+
+func normalizeServerName(hello *tls.ClientHelloInfo) string {
+	if hello == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(hello.ServerName))
 }
