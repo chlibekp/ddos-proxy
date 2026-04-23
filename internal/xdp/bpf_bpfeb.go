@@ -61,8 +61,9 @@ type bpfProgramSpecs struct {
 //
 // It can be passed ebpf.CollectionSpec.Assign.
 type bpfMapSpecs struct {
-	Blocklist *ebpf.MapSpec `ebpf:"blocklist"`
-	XdpStats  *ebpf.MapSpec `ebpf:"xdp_stats"`
+	AllowedFlows *ebpf.MapSpec `ebpf:"allowed_flows"`
+	Blocklist    *ebpf.MapSpec `ebpf:"blocklist"`
+	XdpStats     *ebpf.MapSpec `ebpf:"xdp_stats"`
 }
 
 // bpfVariableSpecs contains global variables before they are loaded into the kernel.
@@ -91,12 +92,14 @@ func (o *bpfObjects) Close() error {
 //
 // It can be passed to loadBpfObjects or ebpf.CollectionSpec.LoadAndAssign.
 type bpfMaps struct {
-	Blocklist *ebpf.Map `ebpf:"blocklist"`
-	XdpStats  *ebpf.Map `ebpf:"xdp_stats"`
+	AllowedFlows *ebpf.Map `ebpf:"allowed_flows"`
+	Blocklist    *ebpf.Map `ebpf:"blocklist"`
+	XdpStats     *ebpf.Map `ebpf:"xdp_stats"`
 }
 
 func (m *bpfMaps) Close() error {
 	return _BpfClose(
+		m.AllowedFlows,
 		m.Blocklist,
 		m.XdpStats,
 	)
