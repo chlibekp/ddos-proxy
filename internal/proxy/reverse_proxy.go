@@ -128,25 +128,25 @@ func New(target *url.URL, cfg *config.Config) *httputil.ReverseProxy {
 		}
 
 		// Add Via header for clean traffic identification
-		resp.Header.Set("Via", "ddos-mitigator")
+		resp.Header.Set("Via", "ddos-proxy")
 
 		// Handle cache status header
 		if cfg.CacheEnabled {
 			if resp.Header.Get("X-From-Cache") == "1" {
-				resp.Header.Set("X-Ddos-Mitigator-Cache", "HIT")
+				resp.Header.Set("X-Ddos-Proxy-Cache", "HIT")
 				resp.Header.Del("X-From-Cache")
 			} else {
 				// If it's not from cache, but Cache-Control allows caching, it's a MISS.
 				// Otherwise, it's DYNAMIC.
 				cc := resp.Header.Get("Cache-Control")
 				if cc != "" && !strings.Contains(cc, "no-cache") && !strings.Contains(cc, "no-store") && !strings.Contains(cc, "private") {
-					resp.Header.Set("X-Ddos-Mitigator-Cache", "MISS")
+					resp.Header.Set("X-Ddos-Proxy-Cache", "MISS")
 				} else {
-					resp.Header.Set("X-Ddos-Mitigator-Cache", "DYNAMIC")
+					resp.Header.Set("X-Ddos-Proxy-Cache", "DYNAMIC")
 				}
 			}
 		} else {
-			resp.Header.Set("X-Ddos-Mitigator-Cache", "DYNAMIC")
+			resp.Header.Set("X-Ddos-Proxy-Cache", "DYNAMIC")
 		}
 
 		// Inject JS to check for X-Mitigation header
