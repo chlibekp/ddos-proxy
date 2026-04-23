@@ -129,6 +129,8 @@ func New(target *url.URL, cfg *config.Config) *httputil.ReverseProxy {
 
 		// Add Via header for clean traffic identification
 		resp.Header.Set("Via", "ddos-proxy")
+		resp.Header.Del("server")
+		resp.Header.Set("server", "ddos-proxy")
 
 		// Handle cache status header
 		if cfg.CacheEnabled {
