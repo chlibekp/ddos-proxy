@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"html/template"
 	"log"
@@ -167,6 +168,7 @@ func main() {
 		},
 	}
 
+	acmeDirectoryURL := ""
 	if cfg.EnableSSL {
 		// Ensure the certs directory exists
 		if err := os.MkdirAll("certs", 0700); err != nil {
@@ -177,6 +179,7 @@ func main() {
 		m := &autocert.Manager{
 			Cache:  autocert.DirCache("certs"),
 			Prompt: autocert.AcceptTOS,
+			Email:  cfg.ACMEEmail,
 			HostPolicy: func(ctx context.Context, host string) error {
 				slog.Info("ACME host policy check started", "host", host, "backend", cfg.BackendURL)
 				req, err := http.NewRequestWithContext(ctx, "GET", cfg.BackendURL+"/", nil)
@@ -205,9 +208,33 @@ func main() {
 				return nil
 			},
 		}
-		if cfg.ACMEStaging {
-			m.Client = &acme.Client{DirectoryURL: "https://acme-staging-v02.api.letsencrypt.org/directory"}
+		acmeDirectoryURL = cfg.ACMEDirectoryURL
+		if acmeDirectoryURL == "" && cfg.ACMEStaging {
+			acmeDirectoryURL = "https://acme-staging-v02.api.letsencrypt.org/directory"
+		}
+		if acmeDirectoryURL != "" {
+			m.Client = &acme.Client{DirectoryURL: acmeDirectoryURL}
+		}
+		if cfg.ACMEDirectoryURL != "" {
+			slog.Warn("Custom ACME directory is enabled", "directory_url", cfg.ACMEDirectoryURL)
+		} else if cfg.ACMEStaging {
 			slog.Warn("ACME staging is enabled; issued certificates will not be trusted by browsers")
+		}
+		if cfg.ACMEEABKeyID != "" || cfg.ACMEEABHMAC != "" {
+			if cfg.ACMEEABKeyID == "" || cfg.ACMEEABHMAC == "" {
+				slog.Error("Incomplete ACME EAB configuration; both PROXY_ACME_EAB_KEY_ID and PROXY_ACME_EAB_HMAC are required")
+				os.Exit(1)
+			}
+			eabKey, err := decodeACMEEABKey(cfg.ACMEEABHMAC)
+			if err != nil {
+				slog.Error("Failed to decode ACME EAB HMAC", "error", err)
+				os.Exit(1)
+			}
+			m.ExternalAccountBinding = &acme.ExternalAccountBinding{
+				KID: cfg.ACMEEABKeyID,
+				Key: eabKey,
+			}
+			slog.Info("ACME external account binding is enabled", "kid", cfg.ACMEEABKeyID)
 		}
 		tlsConfig := m.TLSConfig()
 		origGetCertificate := tlsConfig.GetCertificate
@@ -282,6 +309,9 @@ func main() {
 			"prometheus_enabled", cfg.PrometheusEnabled,
 			"ssl_enabled", cfg.EnableSSL,
 			"acme_staging", cfg.ACMEStaging,
+			"acme_directory_url", acmeDirectoryURL,
+			"acme_email", cfg.ACMEEmail,
+			"acme_eab_enabled", cfg.ACMEEABKeyID != "" && cfg.ACMEEABHMAC != "",
 		)
 		if cfg.EnableSSL {
 			if err := server.ListenAndServeTLS("", ""); err != nil && err != http.ErrServerClosed {
@@ -324,4 +354,32 @@ func clientHelloRemoteAddr(hello *tls.ClientHelloInfo) string {
 		return ""
 	}
 	return hello.Conn.RemoteAddr().String()
+}
+
+func decodeACMEEABKey(value string) ([]byte, error) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil, fmt.Errorf("empty EAB HMAC")
+	}
+
+	decoders := []struct {
+		name string
+		fn   func(string) ([]byte, error)
+	}{
+		{name: "base64url-no-padding", fn: base64.RawURLEncoding.DecodeString},
+		{name: "base64url", fn: base64.URLEncoding.DecodeString},
+		{name: "base64-no-padding", fn: base64.RawStdEncoding.DecodeString},
+		{name: "base64", fn: base64.StdEncoding.DecodeString},
+	}
+
+	var lastErr error
+	for _, decoder := range decoders {
+		decoded, err := decoder.fn(value)
+		if err == nil {
+			return decoded, nil
+		}
+		lastErr = err
+	}
+
+	return nil, fmt.Errorf("unsupported EAB HMAC encoding: %w", lastErr)
 }

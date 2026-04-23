@@ -44,6 +44,10 @@ The proxy is configured via environment variables.
 | `PROXY_CACHE_ENABLED` | `false` | If `true` or `1`, enables disk-based HTTP caching for responses with valid `Cache-Control` headers. |
 | `PROXY_ENABLE_SSL` | `false` | If `true`, enables automatic HTTPS using Let's Encrypt (requires `PORT` to be set to 443). |
 | `PROXY_ACME_STAGING` | `false` | If `true`, uses Let's Encrypt staging instead of production for certificate issuance. Staging certificates are not trusted by browsers. |
+| `PROXY_ACME_DIRECTORY_URL` | `""` | Optional ACME directory URL override for alternate providers such as ZeroSSL. Overrides `PROXY_ACME_STAGING` when set. |
+| `PROXY_ACME_EMAIL` | `""` | Optional ACME contact email used during account registration. Recommended for providers that send expiry or account notices. |
+| `PROXY_ACME_EAB_KEY_ID` | `""` | Optional External Account Binding key ID for ACME providers that require EAB. Must be used together with `PROXY_ACME_EAB_HMAC`. |
+| `PROXY_ACME_EAB_HMAC` | `""` | Optional External Account Binding HMAC key for ACME providers that require EAB. Accepts base64 or base64url-encoded input. |
 | `PROXY_HTTP_PORT` | `80` | The port for the HTTP-to-HTTPS redirect server and Let's Encrypt HTTP-01 challenges (only used when SSL is enabled). |
 | `PROXY_XDP_INTERFACE` | `""` | Network interface to attach the XDP program to (e.g., `eth0`) for hardware-accelerated L4 blocking. Requires `NET_ADMIN`, `SYS_ADMIN`, and `BPF` capabilities in Docker. |
 
@@ -73,6 +77,18 @@ The proxy is configured via environment variables.
     ```
 
 3.  Access the proxy at `http://localhost:8080`.
+
+### Alternate ACME Providers
+
+To use another ACME-compatible CA instead of Let's Encrypt, set a custom directory URL. For providers that require External Account Binding, also set the EAB credentials:
+
+```bash
+export PROXY_ENABLE_SSL=true
+export PROXY_ACME_DIRECTORY_URL="https://acme.zerossl.com/v2/DV90"
+export PROXY_ACME_EMAIL="you@example.com"
+export PROXY_ACME_EAB_KEY_ID="your-eab-kid"
+export PROXY_ACME_EAB_HMAC="your-base64-or-base64url-hmac"
+```
 
 ### Building for Production
 

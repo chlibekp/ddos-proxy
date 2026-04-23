@@ -32,6 +32,10 @@ type Config struct {
 	CacheEnabled            bool
 	EnableSSL               bool
 	ACMEStaging             bool
+	ACMEDirectoryURL        string
+	ACMEEmail               string
+	ACMEEABKeyID            string
+	ACMEEABHMAC             string
 	XDPInterface            string
 	PoWDifficulty           int
 }
@@ -170,6 +174,10 @@ func Load() (*Config, error) {
 	if s := os.Getenv("PROXY_ACME_STAGING"); s == "true" || s == "1" {
 		acmeStaging = true
 	}
+	acmeDirectoryURL := strings.TrimSpace(os.Getenv("PROXY_ACME_DIRECTORY_URL"))
+	acmeEmail := strings.TrimSpace(os.Getenv("PROXY_ACME_EMAIL"))
+	acmeEABKeyID := strings.TrimSpace(os.Getenv("PROXY_ACME_EAB_KEY_ID"))
+	acmeEABHMAC := strings.TrimSpace(os.Getenv("PROXY_ACME_EAB_HMAC"))
 
 	powDifficulty := 5
 	if s := os.Getenv("PROXY_POW_DIFFICULTY"); s != "" {
@@ -204,6 +212,10 @@ func Load() (*Config, error) {
 		CacheEnabled:            cacheEnabled,
 		EnableSSL:               enableSSL,
 		ACMEStaging:             acmeStaging,
+		ACMEDirectoryURL:        acmeDirectoryURL,
+		ACMEEmail:               acmeEmail,
+		ACMEEABKeyID:            acmeEABKeyID,
+		ACMEEABHMAC:             acmeEABHMAC,
 		XDPInterface:            xdpInterface,
 		PoWDifficulty:           powDifficulty,
 	}, nil
