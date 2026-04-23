@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"crypto/tls"
+	"crypto/x509"
 	"encoding/base64"
 	"fmt"
 	"html/template"
@@ -171,6 +172,7 @@ func main() {
 
 	acmeDirectoryURL := ""
 	certCoordinator := newCertRequestCoordinator()
+	hostCertCache := newHostCertCache()
 	if cfg.EnableSSL {
 		// Ensure the certs directory exists
 		if err := os.MkdirAll("certs", 0700); err != nil {
@@ -243,6 +245,9 @@ func main() {
 		tlsConfig.GetCertificate = func(hello *tls.ClientHelloInfo) (*tls.Certificate, error) {
 			remoteAddr := clientHelloRemoteAddr(hello)
 			host := normalizeServerName(hello)
+			if cert, ok := hostCertCache.Get(host); ok {
+				return cert, nil
+			}
 			slog.Info("TLS certificate request received",
 				"server_name", host,
 				"remote_addr", remoteAddr,
@@ -276,6 +281,7 @@ func main() {
 				)
 				return nil, err
 			}
+			hostCertCache.Put(host, cert)
 
 			slog.Info("TLS certificate request succeeded",
 				"server_name", host,
@@ -406,6 +412,7 @@ func decodeACMEEABKey(value string) ([]byte, error) {
 }
 
 const defaultCertRetryBackoff = time.Minute
+const certCacheRenewBefore = 24 * time.Hour
 
 type certRequestCoordinator struct {
 	mu     sync.Mutex
@@ -497,4 +504,81 @@ func normalizeServerName(hello *tls.ClientHelloInfo) string {
 		return ""
 	}
 	return strings.ToLower(strings.TrimSpace(hello.ServerName))
+}
+
+type hostCertCache struct {
+	mu    sync.RWMutex
+	certs map[string]cachedHostCert
+}
+
+type cachedHostCert struct {
+	cert      *tls.Certificate
+	expiresAt time.Time
+}
+
+func newHostCertCache() *hostCertCache {
+	return &hostCertCache{
+		certs: make(map[string]cachedHostCert),
+	}
+}
+
+func (c *hostCertCache) Get(host string) (*tls.Certificate, bool) {
+	if host == "" {
+		return nil, false
+	}
+
+	c.mu.RLock()
+	entry, ok := c.certs[host]
+	c.mu.RUnlock()
+	if !ok {
+		return nil, false
+	}
+
+	if time.Now().After(entry.expiresAt) {
+		c.mu.Lock()
+		delete(c.certs, host)
+		c.mu.Unlock()
+		return nil, false
+	}
+
+	return entry.cert, true
+}
+
+func (c *hostCertCache) Put(host string, cert *tls.Certificate) {
+	if host == "" || cert == nil {
+		return
+	}
+
+	expiresAt, ok := certRenewDeadline(cert)
+	if !ok {
+		return
+	}
+
+	c.mu.Lock()
+	c.certs[host] = cachedHostCert{
+		cert:      cert,
+		expiresAt: expiresAt,
+	}
+	c.mu.Unlock()
+}
+
+func certRenewDeadline(cert *tls.Certificate) (time.Time, bool) {
+	if cert == nil || len(cert.Certificate) == 0 {
+		return time.Time{}, false
+	}
+
+	leaf := cert.Leaf
+	if leaf == nil {
+		parsed, err := x509.ParseCertificate(cert.Certificate[0])
+		if err != nil {
+			return time.Time{}, false
+		}
+		leaf = parsed
+	}
+
+	deadline := leaf.NotAfter.Add(-certCacheRenewBefore)
+	if deadline.Before(time.Now()) {
+		return time.Time{}, false
+	}
+	return deadline, true
 }
