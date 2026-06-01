@@ -1,6 +1,7 @@
 package proxy
 
 import (
+	"bytes"
 	"compress/gzip"
 	"io"
 	"log/slog"
@@ -10,11 +11,25 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/gregjones/httpcache"
 	"github.com/gregjones/httpcache/diskcache"
 	"github.com/hegy/ddos-proxy/internal/config"
 )
+
+// jsSnippet is the mitigation-detection script injected into HTML responses.
+// Declared as []byte to avoid repeated string→[]byte conversion.
+var jsSnippet = []byte(`<script>(function(){var r=function(){window.location.reload()};var c=function(h){if(h==='challenge')r()};var f=window.fetch;if(f){window.fetch=function(){return f.apply(this,arguments).then(function(res){if(res&&res.headers&&res.headers.get){c(res.headers.get('X-Mitigation'))}return res})}}var x=XMLHttpRequest.prototype;var o=x.open;x.open=function(){this.addEventListener('load',function(){if(this.getResponseHeader){c(this.getResponseHeader('X-Mitigation'))}});return o.apply(this,arguments)};if(window.fetch){document.addEventListener('error',function(e){var t=e.target;if(t&&t.tagName&&(t.src||t.href)){var g=t.tagName;if(g==='IMG'||g==='SCRIPT'||g==='LINK'||g==='IFRAME'||g==='VIDEO'||g==='AUDIO'){var u=t.src||t.href;if(u&&u.indexOf('data:')!==0){window.fetch(u,{method:'HEAD'}).catch(function(){})}}}},true)}})();</script>`)
+
+var headTag = []byte("<head>")
+var bodyTag = []byte("<body>")
+
+// bodyBufPool pools buffers used for reading HTML response bodies during JS injection.
+var bodyBufPool = sync.Pool{
+	New: func() any { return new(bytes.Buffer) },
+}
 
 // NormalizingTransport wraps an http.RoundTripper to fix malformed Cache-Control headers
 type NormalizingTransport struct {
@@ -69,7 +84,13 @@ func isWebSocketUpgrade(req *http.Request) bool {
 func New(target *url.URL, cfg *config.Config) *httputil.ReverseProxy {
 	proxy := httputil.NewSingleHostReverseProxy(target)
 
-	baseTransport := http.DefaultTransport
+	baseTransport := &http.Transport{
+		MaxIdleConns:          512,
+		MaxIdleConnsPerHost:   256,
+		IdleConnTimeout:       90 * time.Second,
+		TLSHandshakeTimeout:   5 * time.Second,
+		ExpectContinueTimeout: 1 * time.Second,
+	}
 
 	if cfg.CacheEnabled {
 		cacheDir := "/tmp/ddos-mitigator-cache"
@@ -151,53 +172,60 @@ func New(target *url.URL, cfg *config.Config) *httputil.ReverseProxy {
 			resp.Header.Set("X-Ddos-Proxy-Cache", "DYNAMIC")
 		}
 
-		// Inject JS to check for X-Mitigation header
+		// Inject mitigation-detection JS into HTML responses.
 		contentType := resp.Header.Get("Content-Type")
 		if strings.HasPrefix(contentType, "text/html") {
-			var bodyBytes []byte
-			var err error
-
 			ce := resp.Header.Get("Content-Encoding")
+			if ce != "" && ce != "identity" && ce != "gzip" {
+				// Unsupported encoding — skip injection to avoid corrupting body.
+				return nil
+			}
+
+			buf := bodyBufPool.Get().(*bytes.Buffer)
+			buf.Reset()
+
+			var readErr error
 			if ce == "gzip" {
 				gr, err := gzip.NewReader(resp.Body)
 				if err == nil {
-					bodyBytes, err = io.ReadAll(gr)
+					_, readErr = io.Copy(buf, gr)
 					gr.Close()
 				} else {
-					bodyBytes, err = io.ReadAll(resp.Body)
+					_, readErr = io.Copy(buf, resp.Body)
 				}
-			} else if ce != "" && ce != "identity" {
-				// Unsupported encoding, skip JS injection to avoid corrupting the body
-				return nil
 			} else {
-				bodyBytes, err = io.ReadAll(resp.Body)
-			}
-
-			if err != nil {
-				return err
+				_, readErr = io.Copy(buf, resp.Body)
 			}
 			resp.Body.Close()
-
-			// JS to check X-Mitigation header
-			// This script intercepts fetch and XMLHttpRequest to check for mitigation headers
-			js := `<script>(function(){var r=function(){window.location.reload()};var c=function(h){if(h==='challenge')r()};var f=window.fetch;if(f){window.fetch=function(){return f.apply(this,arguments).then(function(res){if(res&&res.headers&&res.headers.get){c(res.headers.get('X-Mitigation'))}return res})}}var x=XMLHttpRequest.prototype;var o=x.open;x.open=function(){this.addEventListener('load',function(){if(this.getResponseHeader){c(this.getResponseHeader('X-Mitigation'))}});return o.apply(this,arguments)};if(window.fetch){document.addEventListener('error',function(e){var t=e.target;if(t&&t.tagName&&(t.src||t.href)){var g=t.tagName;if(g==='IMG'||g==='SCRIPT'||g==='LINK'||g==='IFRAME'||g==='VIDEO'||g==='AUDIO'){var u=t.src||t.href;if(u&&u.indexOf('data:')!==0){window.fetch(u,{method:'HEAD'}).catch(function(){})}}}},true)}})();</script>`
-
-			bodyStr := string(bodyBytes)
-			if strings.Contains(bodyStr, "<head>") {
-				bodyStr = strings.Replace(bodyStr, "<head>", "<head>"+js, 1)
-			} else if strings.Contains(bodyStr, "<body>") {
-				bodyStr = strings.Replace(bodyStr, "<body>", "<body>"+js, 1)
-			} else {
-				bodyStr = js + bodyStr
+			if readErr != nil {
+				bodyBufPool.Put(buf)
+				return readErr
 			}
+
+			body := buf.Bytes()
+			out := make([]byte, 0, len(body)+len(jsSnippet))
+			if idx := bytes.Index(body, headTag); idx >= 0 {
+				out = append(out, body[:idx+len(headTag)]...)
+				out = append(out, jsSnippet...)
+				out = append(out, body[idx+len(headTag):]...)
+			} else if idx := bytes.Index(body, bodyTag); idx >= 0 {
+				out = append(out, body[:idx+len(bodyTag)]...)
+				out = append(out, jsSnippet...)
+				out = append(out, body[idx+len(bodyTag):]...)
+			} else {
+				out = append(out, jsSnippet...)
+				out = append(out, body...)
+			}
+
+			bodyBufPool.Put(buf)
 
 			if ce == "gzip" {
 				resp.Header.Del("Content-Encoding")
 			}
 
-			resp.Body = io.NopCloser(strings.NewReader(bodyStr))
-			resp.ContentLength = int64(len(bodyStr))
-			resp.Header.Set("Content-Length", strconv.Itoa(len(bodyStr)))
+			resp.Body = io.NopCloser(bytes.NewReader(out))
+			resp.ContentLength = int64(len(out))
+			resp.Header.Set("Content-Length", strconv.Itoa(len(out)))
 		}
 
 		location := resp.Header.Get("Location")

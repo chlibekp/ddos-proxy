@@ -68,6 +68,7 @@ func TestBlockAction(t *testing.T) {
 	state.mu.Lock()
 	state.blocked = true
 	state.mu.Unlock()
+	state.blockedFlag.Store(true)
 
 	// Test 403 (Default)
 	req := httptest.NewRequest("GET", "/", nil)

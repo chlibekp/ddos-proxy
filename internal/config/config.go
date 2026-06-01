@@ -38,6 +38,7 @@ type Config struct {
 	ACMEEABHMAC             string
 	XDPInterface            string
 	PoWDifficulty           int
+	MaxIPStates             int
 }
 
 // Load loads the configuration from environment variables.
@@ -188,6 +189,13 @@ func Load() (*Config, error) {
 
 	xdpInterface := os.Getenv("PROXY_XDP_INTERFACE")
 
+	maxIPStates := 500_000
+	if s := os.Getenv("PROXY_MAX_IP_STATES"); s != "" {
+		if v, err := strconv.Atoi(s); err == nil && v > 0 {
+			maxIPStates = v
+		}
+	}
+
 	return &Config{
 		BackendURL:              backendURL,
 		Port:                    port,
@@ -218,5 +226,6 @@ func Load() (*Config, error) {
 		ACMEEABHMAC:             acmeEABHMAC,
 		XDPInterface:            xdpInterface,
 		PoWDifficulty:           powDifficulty,
+		MaxIPStates:             maxIPStates,
 	}, nil
 }

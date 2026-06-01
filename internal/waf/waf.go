@@ -22,15 +22,20 @@ import (
 	"github.com/hegy/ddos-proxy/internal/xdp"
 )
 
+var recorderPool = sync.Pool{
+	New: func() any { return &responseRecorder{statusCode: http.StatusOK} },
+}
+
 // Manager holds the application state and protection logic.
 type Manager struct {
 	cfg             *config.Config
 	rl              *limiter.RateLimiter
 	templates       *template.Template
 	xdp             xdp.Blocker
-	mitigationUntil int64    // Atomic unix timestamp
-	timeoutCount    int64    // Atomic counter for long/timed-out requests
-	ipStates        sync.Map // map[string]*ClientState
+	mitigationUntil int64        // Atomic unix timestamp
+	timeoutCount    int64        // Atomic counter for long/timed-out requests
+	ipStates        sync.Map     // map[string]*ClientState
+	ipStateCount    atomic.Int64 // total entries in ipStates
 }
 
 // ChallengeData is passed to the template.
@@ -51,9 +56,9 @@ func NewManager(cfg *config.Config, rl *limiter.RateLimiter, tmpl *template.Temp
 		xdp:       xdpBlocker,
 	}
 
-	// Start cleanup ticker
+	// Start cleanup ticker — 10s cadence keeps ipStates from growing too large.
 	go func() {
-		ticker := time.NewTicker(1 * time.Minute)
+		ticker := time.NewTicker(10 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
 			manager.cleanup()
@@ -192,6 +197,10 @@ func (m *Manager) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 		}
 
 		state := m.getClientState(ip, r.Host)
+		if state == nil {
+			m.serveChallenge(w, r, "Invalid challenge session")
+			return
+		}
 		state.mu.Lock()
 		salt := state.powSalt
 		servedAt := state.challengeServedAt
@@ -224,15 +233,21 @@ func (m *Manager) verifyChallenge(w http.ResponseWriter, r *http.Request) {
 
 	// Mark IP as verified
 	state := m.getClientState(ip, r.Host)
-	state.mu.Lock()
-	state.violationCount = 0
-	state.challengeServed = false
-	state.blocked = false
-	state.verified = true
-	state.verifiedAt = time.Now()
-	// Clear PoW salt so it can't be reused
-	state.powSalt = ""
-	state.mu.Unlock()
+	if state != nil {
+		verifiedAt := time.Now()
+		state.mu.Lock()
+		state.violationCount = 0
+		state.challengeServed = false
+		state.blocked = false
+		state.verified = true
+		state.verifiedAt = verifiedAt
+		state.powSalt = ""
+		// Sync atomic fast-path fields.
+		state.blockedFlag.Store(false)
+		state.verifiedFlag.Store(true)
+		state.verifiedUntil.Store(verifiedAt.Add(m.cfg.VerifyTime).Unix())
+		state.mu.Unlock()
+	}
 
 	// Redirect to original URL
 	originalURL := r.FormValue("original_url")
@@ -270,22 +285,26 @@ func (m *Manager) unblockL4(ip string) {
 func (m *Manager) getClientState(ip, host string) *ClientState {
 	h, _, err := net.SplitHostPort(host)
 	if err != nil {
-		h = host // Might not have a port
+		h = host
 	}
 	key := ip + "|" + h
 
-	val, ok := m.ipStates.Load(key)
-	if ok {
+	if val, ok := m.ipStates.Load(key); ok {
 		return val.(*ClientState)
 	}
-	state := &ClientState{
-		lastSeen: time.Now(),
+
+	// Cap total tracked IPs to prevent OOM under IP-spoofed floods (0 = unlimited).
+	if m.cfg.MaxIPStates > 0 && m.ipStateCount.Load() >= int64(m.cfg.MaxIPStates) {
+		return nil
 	}
+
+	state := &ClientState{}
+	state.lastSeen.Store(time.Now().Unix())
 	actual, loaded := m.ipStates.LoadOrStore(key, state)
-	if loaded {
-		return actual.(*ClientState)
+	if !loaded {
+		m.ipStateCount.Add(1)
 	}
-	return state
+	return actual.(*ClientState)
 }
 
 func (m *Manager) cleanup() {
@@ -293,31 +312,29 @@ func (m *Manager) cleanup() {
 	mitigationEnd := time.Unix(atomic.LoadInt64(&m.mitigationUntil), 0)
 	attackEnded := now.After(mitigationEnd)
 
-	// Reset timeout count every cleanup cycle
 	atomic.StoreInt64(&m.timeoutCount, 0)
-
-	// If attack has ended and we are not in always-on mode, we can be more aggressive with cleanup
-	// But we still need to iterate to check blocked IPs expiration
 
 	m.ipStates.Range(func(key, value interface{}) bool {
 		state := value.(*ClientState)
 		state.mu.Lock()
 		defer state.mu.Unlock()
 
-		// Expire verification
+		// Expire verification — sync atomic flag.
 		if state.verified && now.Sub(state.verifiedAt) > m.cfg.VerifyTime {
 			state.verified = false
+			state.verifiedFlag.Store(false)
 		}
 
-		// If attack ended and not always on, we can clear non-verified states
 		if attackEnded && !m.cfg.AlwaysOn && !state.verified {
 			m.ipStates.Delete(key)
+			m.ipStateCount.Add(-1)
 			return true
 		}
 
-		// Unblock if blocked for more than 5 minutes
+		// Unblock after 5 minutes — sync atomic flag.
 		if state.blocked && now.Sub(state.blockedAt) > 5*time.Minute {
 			state.blocked = false
+			state.blockedFlag.Store(false)
 			state.violationCount = 0
 			state.challengeServed = false
 			state.errorCount = 0
@@ -330,10 +347,10 @@ func (m *Manager) cleanup() {
 			}
 		}
 
-		// Cleanup idle connections (e.g. 10 min inactivity)
-		// If verified, we keep it. If not verified and idle, delete.
-		if !state.verified && now.Sub(state.lastSeen) > 10*time.Minute {
+		// Evict idle unverified entries.
+		if !state.verified && now.Unix()-state.lastSeen.Load() > 10*60 {
 			m.ipStates.Delete(key)
+			m.ipStateCount.Add(-1)
 		}
 
 		return true
@@ -349,57 +366,66 @@ func isWebSocketUpgrade(req *http.Request) bool {
 // It checks rate limits, IP blocking, and serves challenges if necessary.
 func (m *Manager) Middleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Bypass WAF entirely for WebSocket upgrades so they always work
 		if isWebSocketUpgrade(r) {
 			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Check Whitelisted User Agents
+		// Whitelisted UA check.
 		ua := r.Header.Get("User-Agent")
-		isWhitelisted := false
 		if len(m.cfg.WhitelistedUA) > 0 {
 			for _, wua := range m.cfg.WhitelistedUA {
 				if strings.Contains(ua, wua) {
-					isWhitelisted = true
-					break
+					if m.rl.GetWhitelistReqCount() >= m.cfg.WhitelistRateLimit {
+						if m.cfg.PrometheusEnabled {
+							metrics.DroppedRequests.WithLabelValues("whitelist_rate_limit").Inc()
+						}
+						http.Error(w, "Rate Limit Exceeded", http.StatusTooManyRequests)
+						return
+					}
+					m.rl.IncWhitelistReq()
+					if m.cfg.PrometheusEnabled {
+						metrics.AllowedRequests.WithLabelValues("whitelist").Inc()
+					}
+					next.ServeHTTP(w, r)
+					return
 				}
 			}
-		}
-
-		if isWhitelisted {
-			current := m.rl.GetWhitelistReqCount()
-			if current >= m.cfg.WhitelistRateLimit {
-				if m.cfg.PrometheusEnabled {
-					metrics.DroppedRequests.WithLabelValues("whitelist_rate_limit").Inc()
-				}
-				http.Error(w, "Rate Limit Exceeded", http.StatusTooManyRequests)
-				return
-			}
-			m.rl.IncWhitelistReq()
-			if m.cfg.PrometheusEnabled {
-				metrics.AllowedRequests.WithLabelValues("whitelist").Inc()
-			}
-			next.ServeHTTP(w, r)
-			return
 		}
 
 		ip := m.getClientIP(r)
+		now := time.Now()
+		nowUnix := now.Unix()
 
-		// Check if IP is blocked
 		state := m.getClientState(ip, r.Host)
-		state.mu.Lock()
-		state.lastSeen = time.Now()
-		if state.blocked {
-			// Handle L4 blocking if Cloudflare and ForwardedFor are not used
-			if !m.cfg.CloudflareSupport && !m.cfg.UseForwardedFor {
-				if !state.l4Blocked {
-					state.errorCount++
-					if state.errorCount > 5 {
-						state.l4Blocked = true
-						go m.blockL4(ip)
+		if state == nil {
+			// ipStates cap hit — serve challenge without tracking.
+			m.serveChallenge(w, r, "")
+			return
+		}
+
+		state.lastSeen.Store(nowUnix)
+
+		// ── Blocked fast-path ────────────────────────────────────────────
+		if state.blockedFlag.Load() {
+			state.mu.Lock()
+			if state.blocked {
+				if !m.cfg.CloudflareSupport && !m.cfg.UseForwardedFor {
+					if !state.l4Blocked {
+						state.errorCount++
+						if state.errorCount > 5 {
+							state.l4Blocked = true
+							go m.blockL4(ip)
+							state.mu.Unlock()
+							if hijacker, ok := w.(http.Hijacker); ok {
+								if conn, _, err := hijacker.Hijack(); err == nil {
+									conn.Close()
+								}
+							}
+							return
+						}
+					} else {
 						state.mu.Unlock()
-						// L4 blocked, close connection immediately as fallback before iptables takes effect
 						if hijacker, ok := w.(http.Hijacker); ok {
 							if conn, _, err := hijacker.Hijack(); err == nil {
 								conn.Close()
@@ -407,43 +433,40 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 						}
 						return
 					}
-				} else {
-					// Already L4 blocked, connection should have been dropped by iptables
-					// Fallback: close connection immediately
-					state.mu.Unlock()
+				}
+				state.mu.Unlock()
+				if m.cfg.PrometheusEnabled {
+					metrics.DroppedRequests.WithLabelValues("blocked_ip").Inc()
+				}
+				if m.cfg.BlockAction == "close" {
 					if hijacker, ok := w.(http.Hijacker); ok {
 						if conn, _, err := hijacker.Hijack(); err == nil {
 							conn.Close()
 						}
-					}
-					return
-				}
-			}
-
-			state.mu.Unlock()
-			// Hijack and close connection or send 403
-			if m.cfg.PrometheusEnabled {
-				metrics.DroppedRequests.WithLabelValues("blocked_ip").Inc()
-			}
-			if m.cfg.BlockAction == "close" {
-				if hijacker, ok := w.(http.Hijacker); ok {
-					conn, _, err := hijacker.Hijack()
-					if err == nil {
-						conn.Close()
+					} else {
+						http.Error(w, "Forbidden", http.StatusForbidden)
 					}
 				} else {
 					http.Error(w, "Forbidden", http.StatusForbidden)
 				}
-			} else {
-				http.Error(w, "Forbidden", http.StatusForbidden)
+				return
 			}
+			state.mu.Unlock()
+		}
+
+		// ── Verified fast-path ───────────────────────────────────────────
+		if state.verifiedFlag.Load() && nowUnix < state.verifiedUntil.Load() {
+			if m.cfg.PrometheusEnabled {
+				metrics.AllowedRequests.WithLabelValues("verified").Inc()
+			}
+			next.ServeHTTP(w, r)
 			return
 		}
 
-		// Check verification status
+		// Expire stale verified state under lock.
+		state.mu.Lock()
 		if state.verified {
-			// Check expiration
-			if time.Since(state.verifiedAt) < m.cfg.VerifyTime {
+			if now.Sub(state.verifiedAt) < m.cfg.VerifyTime {
 				state.mu.Unlock()
 				if m.cfg.PrometheusEnabled {
 					metrics.AllowedRequests.WithLabelValues("verified").Inc()
@@ -451,36 +474,29 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 				next.ServeHTTP(w, r)
 				return
 			}
-			// Expired
 			state.verified = false
+			state.verifiedFlag.Store(false)
 		}
 		state.mu.Unlock()
 
-		// Bypass for challenge verification
 		if r.URL.Path == "/challenge/verify" {
 			m.verifyChallenge(w, r)
 			return
 		}
 
-		// Check global rate limits
+		// Check global rate limits.
 		reqRate, connRate := m.rl.GetCounts()
-		now := time.Now().Unix()
 		mitigationUntil := atomic.LoadInt64(&m.mitigationUntil)
-
-		// Determine if we should serve challenge
 		shouldServeChallenge := m.cfg.AlwaysOn
 
-		// If limits exceeded, extend mitigation time and enable challenge
 		if reqRate >= m.cfg.MaxReqPerSec || connRate >= m.cfg.MaxConnPerSec {
-			newUntil := time.Now().Add(m.cfg.MitigationTime).Unix()
-			atomic.StoreInt64(&m.mitigationUntil, newUntil)
+			atomic.StoreInt64(&m.mitigationUntil, now.Add(m.cfg.MitigationTime).Unix())
 			shouldServeChallenge = true
-		} else if now < mitigationUntil {
+		} else if nowUnix < mitigationUntil {
 			shouldServeChallenge = true
 		} else if m.cfg.AutoMitigationOnTimeout {
 			if atomic.LoadInt64(&m.timeoutCount) >= int64(m.cfg.MaxTimeouts) {
-				newUntil := time.Now().Add(m.cfg.MitigationTime).Unix()
-				atomic.StoreInt64(&m.mitigationUntil, newUntil)
+				atomic.StoreInt64(&m.mitigationUntil, now.Add(m.cfg.MitigationTime).Unix())
 				shouldServeChallenge = true
 			}
 		}
@@ -491,19 +507,18 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 				state.challengeServed = true
 				state.violationCount = 0
 			} else {
-				// Already served, this is a violation if it's not the verification (checked above)
 				state.violationCount++
 				if state.violationCount > m.cfg.MaxFailedChallenges {
 					state.blocked = true
-					state.blockedAt = time.Now()
+					state.blockedAt = now
+					state.blockedFlag.Store(true)
 					state.mu.Unlock()
 					if m.cfg.PrometheusEnabled {
 						metrics.DroppedRequests.WithLabelValues("challenge_violation").Inc()
 					}
 					if m.cfg.BlockAction == "close" {
 						if hijacker, ok := w.(http.Hijacker); ok {
-							conn, _, err := hijacker.Hijack()
-							if err == nil {
+							if conn, _, err := hijacker.Hijack(); err == nil {
 								conn.Close()
 							}
 						}
@@ -514,33 +529,28 @@ func (m *Manager) Middleware(next http.Handler) http.Handler {
 				}
 			}
 			state.mu.Unlock()
-
 			m.serveChallenge(w, r, "")
 			return
 		}
 
-		// Increment request counter
 		m.rl.IncReq()
 		if m.cfg.PrometheusEnabled {
 			metrics.AllowedRequests.WithLabelValues("normal").Inc()
 		}
 
 		if m.cfg.AutoMitigationOnTimeout {
-			start := time.Now()
-
-			// Use a response writer wrapper to capture status code
-			rr := &responseRecorder{ResponseWriter: w, statusCode: http.StatusOK}
+			rr := recorderPool.Get().(*responseRecorder)
+			rr.ResponseWriter = w
+			rr.statusCode = http.StatusOK
 			next.ServeHTTP(rr, r)
+			duration := time.Since(now)
+			status := rr.statusCode
+			recorderPool.Put(rr)
 
-			duration := time.Since(start)
-
-			// Consider it a timeout if it took longer than threshold OR returned a gateway timeout/bad gateway
-			if duration >= m.cfg.TimeoutThreshold || rr.statusCode == http.StatusGatewayTimeout || rr.statusCode == http.StatusBadGateway {
+			if duration >= m.cfg.TimeoutThreshold || status == http.StatusGatewayTimeout || status == http.StatusBadGateway {
 				count := atomic.AddInt64(&m.timeoutCount, 1)
 				if count >= int64(m.cfg.MaxTimeouts) {
-					// We just crossed the threshold. The next requests will trigger mitigation immediately.
-					newUntil := time.Now().Add(m.cfg.MitigationTime).Unix()
-					atomic.StoreInt64(&m.mitigationUntil, newUntil)
+					atomic.StoreInt64(&m.mitigationUntil, time.Now().Add(m.cfg.MitigationTime).Unix())
 				}
 			}
 		} else {
