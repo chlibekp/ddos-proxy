@@ -1,5 +1,7 @@
 # DDoS Protection Proxy
 
+> **⚠️ DEPRECATED**: This repository is no longer actively maintained. Please migrate to the Rust version: [ddos-proxy-rust](https://github.com/chlibekp/ddos-proxy-rust)
+
 A high-performance Go reverse proxy designed to protect backend services from DDoS attacks. It features global rate limiting, connection limiting, Cloudflare Turnstile, and a native Proof-of-Work (PoW) captcha to mitigate automated attacks.
 
 ## Features
